@@ -1,0 +1,268 @@
+---
+title: "CARC-CRAC_analysis"
+output: html_document
+date: "2025-07-29"
+---
+
+```{r}
+library(tidyverse)
+library(stringr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(progress)
+
+setwd("~/R_data/CARC_CRAC_analysis/")
+proteome_data <- read_excel("Gene_TM_sequence_helix_b-strand_UniProtkb-hs_2025_07_29.xlsx")
+```
+
+
+```{r}
+# Function to parse structural features (helices or strands)
+parse_structural_features <- function(feature_string) {
+  if (is.na(feature_string) || feature_string == "") {
+    return(tibble(start = numeric(), end = numeric()))
+  }
+  
+  # Extract all position ranges (e.g., "164..174")
+  positions <- str_extract_all(feature_string, "\\d+\\.\\.\\d+")[[1]]
+  
+  if (length(positions) == 0) {
+    return(tibble(start = numeric(), end = numeric()))
+  }
+  
+  # Parse start and end positions
+  ranges <- map_df(positions, function(pos) {
+    parts <- str_split(pos, "\\.\\.")[[1]]
+    tibble(start = as.numeric(parts[1]), end = as.numeric(parts[2]))
+  })
+  
+  return(ranges)
+}
+
+# Function to check if a motif overlaps with structural features
+check_structural_overlap <- function(motif_positions, motif_lengths, structural_ranges) {
+  if (length(motif_positions) == 0 || nrow(structural_ranges) == 0) {
+    return(FALSE)
+  }
+  
+  # Check each motif
+  for (i in seq_along(motif_positions)) {
+    motif_start <- motif_positions[i]
+    motif_end <- motif_start + motif_lengths[i] - 1
+    
+    # Check overlap with each structural feature
+    for (j in 1:nrow(structural_ranges)) {
+      struct_start <- structural_ranges$start[j]
+      struct_end <- structural_ranges$end[j]
+      
+      # Check if there's any overlap
+      if (motif_start <= struct_end && motif_end >= struct_start) {
+        return(TRUE)
+      }
+    }
+  }
+  
+  return(FALSE)
+}
+
+# Enhanced motif finding function that returns lengths
+find_motifs_enhanced <- function(sequence, pattern_type = "CRAC") {
+  amino_acids <- "[ACDEFGHIKLMNPQRSTVWY]"
+  
+  if (pattern_type == "CRAC") {
+    pattern <- paste0("[LV](", amino_acids, "{0,5})Y(", amino_acids, "{0,5})[RK]")
+  } else if (pattern_type == "CARC") {
+    pattern <- paste0("[RK](", amino_acids, "{0,5})[YF](", amino_acids, "{0,5})[LV]")
+  }
+  
+  matches <- str_locate_all(sequence, pattern)[[1]]
+  
+  if (nrow(matches) > 0) {
+    matched_seqs <- str_sub(sequence, matches[,1], matches[,2])
+    return(list(
+      count = nrow(matches),
+      sequences = matched_seqs,
+      positions = matches[,1],
+      lengths = nchar(matched_seqs)
+    ))
+  } else {
+    return(list(
+      count = 0, 
+      sequences = character(0), 
+      positions = numeric(0),
+      lengths = numeric(0)
+    ))
+  }
+}
+
+# Main analysis function with structural features
+analyze_proteome_with_structure <- function(proteome_df) {
+  total_rows <- nrow(proteome_df)
+  cat(sprintf("Starting analysis of %d proteins...\n", total_rows))
+  
+  # Split into chunks for progress updates
+  chunk_size <- 1000
+  proteome_df$chunk <- ceiling(seq_len(total_rows) / chunk_size)
+  
+  results <- proteome_df %>%
+    group_by(chunk) %>%
+    group_modify(~ {
+      current_chunk <- unique(.x$chunk)
+      proteins_done <- min(current_chunk * chunk_size, total_rows)
+      cat(sprintf("\rProcessed %d/%d proteins (%.1f%%)", 
+                  proteins_done, total_rows, 100*proteins_done/total_rows))
+      
+      .x %>%
+        mutate(
+          # Parse structural features
+          helix_ranges = map(Helix, parse_structural_features),
+          strand_ranges = map(`Beta strand`, parse_structural_features),
+          
+          # Find motifs
+          CARC_results = map(Sequence, ~find_motifs_enhanced(.x, "CARC")),
+          CRAC_results = map(Sequence, ~find_motifs_enhanced(.x, "CRAC")),
+          
+          # Extract counts
+          CARC_count = map_int(CARC_results, "count"),
+          CRAC_count = map_int(CRAC_results, "count"),
+          
+          # Binary indicators
+          has_CARC = CARC_count > 0,
+          has_CRAC = CRAC_count > 0,
+          has_either = has_CARC | has_CRAC,
+          
+          # Check structural overlaps
+          CARC_in_helix = pmap_lgl(
+            list(
+              map(CARC_results, "positions"),
+              map(CARC_results, "lengths"),
+              helix_ranges
+            ),
+            check_structural_overlap
+          ),
+          
+          CARC_in_strand = pmap_lgl(
+            list(
+              map(CARC_results, "positions"),
+              map(CARC_results, "lengths"),
+              strand_ranges
+            ),
+            check_structural_overlap
+          ),
+          
+          CRAC_in_helix = pmap_lgl(
+            list(
+              map(CRAC_results, "positions"),
+              map(CRAC_results, "lengths"),
+              helix_ranges
+            ),
+            check_structural_overlap
+          ),
+          
+          CRAC_in_strand = pmap_lgl(
+            list(
+              map(CRAC_results, "positions"),
+              map(CRAC_results, "lengths"),
+              strand_ranges
+            ),
+            check_structural_overlap
+          ),
+          
+          # Combined structural indicators
+          any_motif_in_helix = CARC_in_helix | CRAC_in_helix,
+          any_motif_in_strand = CARC_in_strand | CRAC_in_strand,
+          any_motif_in_structure = any_motif_in_helix | any_motif_in_strand
+        ) %>%
+        select(-helix_ranges, -strand_ranges, -CARC_results, -CRAC_results)
+    }) %>%
+    ungroup() %>%
+    select(-chunk)
+  
+  cat("\nAnalysis complete!\n")
+  return(results)
+}
+
+# Function to get detailed structural overlap information
+get_structural_overlap_details <- function(proteome_results, entry_id) {
+  protein <- proteome_results %>% 
+    filter(Entry == entry_id) %>%
+    slice(1)
+  
+  if (nrow(protein) == 0) {
+    return(NULL)
+  }
+  
+  # Re-extract detailed information for this protein
+  sequence <- protein$Sequence
+  helix_ranges <- parse_structural_features(protein$Helix)
+  strand_ranges <- parse_structural_features(protein$`Beta strand`)
+  
+  carc_results <- find_motifs_enhanced(sequence, "CARC")
+  crac_results <- find_motifs_enhanced(sequence, "CRAC")
+  
+  # Create detailed overlap report
+  details <- list(
+    protein_id = entry_id,
+    gene_name = protein$Gene_Name,
+    
+    helices = helix_ranges,
+    strands = strand_ranges,
+    
+    CARC_motifs = tibble(
+      sequence = carc_results$sequences,
+      position = carc_results$positions,
+      length = carc_results$lengths,
+      in_helix = map2_lgl(carc_results$positions, carc_results$lengths, function(pos, len) {
+        check_structural_overlap(pos, len, helix_ranges)
+      }),
+      in_strand = map2_lgl(carc_results$positions, carc_results$lengths, function(pos, len) {
+        check_structural_overlap(pos, len, strand_ranges)
+      })
+    ),
+    
+    CRAC_motifs = tibble(
+      sequence = crac_results$sequences,
+      position = crac_results$positions,
+      length = crac_results$lengths,
+      in_helix = map2_lgl(crac_results$positions, crac_results$lengths, function(pos, len) {
+        check_structural_overlap(pos, len, helix_ranges)
+      }),
+      in_strand = map2_lgl(crac_results$positions, crac_results$lengths, function(pos, len) {
+        check_structural_overlap(pos, len, strand_ranges)
+      })
+    )
+  )
+  
+  return(details)
+}
+
+
+```
+
+Run that shit
+```{r}
+results <- analyze_proteome_with_structure(proteome_data)
+```
+```{r}
+write.csv(results, file="AB_human-proteome_CARC-CRAC_analysis_29july25.csv",row.names = F)
+```
+
+
+Load in results
+```{r}
+results <- read.csv("AB_human-proteome_CARC-CRAC_analysis_29july25.csv")
+```
+
+Summary of structural overlaps
+structure_summary <- results %>%
+   summarise(
+     total_CARC_in_helix = sum(CARC_in_helix),
+     total_CARC_in_strand = sum(CARC_in_strand),
+     total_CRAC_in_helix = sum(CRAC_in_helix),
+     total_CRAC_in_strand = sum(CRAC_in_strand),
+     proteins_with_motifs_in_structure = sum(any_motif_in_structure)
+   )
+
+ Get detailed information for a specific protein
+ details <- get_structural_overlap_details(results, "A0AV02")

@@ -1,0 +1,231 @@
+---
+title: "Sample_Correlations_AB"
+output: html_document
+date: "2025-11-30"
+---
+This file is used to generate 'correlation plots', what I use as shorthand for: two-dimensional graphs that plot the foldchange for a given protein between two runs, across all the proteins in the sample
+```{r}
+library(readxl)
+library(tidyverse)
+library(broom)
+library(pbapply)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(ggrepel)
+library(RColorBrewer)
+library(dplyr)
+```
+Use this chunk for the 'comparison_results' from MSstats
+```{r}
+run1_file <- "339B-top4-features_comparison-results_imputed_v2.csv"
+run2_file <- "339B_reruns-top4-features_comparison-results_imputed.csv"
+
+run1 <- read_csv(
+  run1_file,
+  na = c("NA", "NaN"),
+  col_types = cols(
+    .default = col_guess(),
+    log2FC = col_character()
+  )
+)
+
+run2 <- read_csv(
+  run2_file,
+  na = c("NA", "NaN"),
+  col_types = cols(
+    .default = col_guess(),
+    log2FC = col_character()
+  )
+)
+
+## 2. Cleaning function: recode #NAME? and Inf, drop unusable comparisons --
+
+clean_fc <- function(df) {
+  df %>%
+    select(Protein, Label, log2FC, issue, MissingPercentage, ImputationPercentage) %>%
+    mutate(
+      log2FC = case_when(
+        log2FC == "#NAME?" ~ -10,      # user-specified truncation for #NAME?
+        log2FC == "Inf"    ~  10,      # positive Inf -> +10
+        log2FC == "-Inf"   ~ -10,      # handle negative Inf if present
+        TRUE               ~ as.numeric(log2FC)
+      )
+    ) %>%
+    filter(is.na(issue) | !issue %in% c("oneConditionMissing", "completeMissing")) %>%
+    filter(!is.na(log2FC))
+}
+
+run1_clean <- clean_fc(run1) %>% rename(log2FC_run1 = log2FC)
+run2_clean <- clean_fc(run2) %>% rename(log2FC_run2 = log2FC)
+
+## 3. Join on Protein + Label ---------------------------------------------
+
+fc_pairs <- inner_join(run1_clean, run2_clean,
+                       by = c("Protein", "Label"))
+
+## 4. Overall correlations -------------------------------------------------
+
+pearson_r  <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "pearson")
+spearman_r <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "spearman")
+
+pearson_r
+spearman_r
+
+fit <- lm(log2FC_run2 ~ log2FC_run1, data = fc_pairs)
+coef(lm(log2FC_run2 ~ log2FC_run1, data = fc_pairs))
+
+summary(fit)$r.squared
+summary(fit)$adj.r.squared
+
+## 5. Global scatterplot of log2FC between runs ---------------------------
+
+p_all <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
+  geom_point(alpha = 0.4, size = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_smooth(method = "lm", se = FALSE) +
+  annotate(
+    "text",
+    x = min(fc_pairs$log2FC_run1, na.rm = TRUE),
+    y = max(fc_pairs$log2FC_run2, na.rm = TRUE),
+    hjust = 0, vjust = 1,
+    label = paste0("Pearson r = ", round(pearson_r, 2),
+                   "\nSpearman rho = ", round(spearman_r, 2))
+  ) +
+  labs(
+    title = "Protein-level log2 fold changes: Run 1 vs Run 2",
+    x = "log2FC (Initial runs)",
+    y = "log2FC (Reruns)"
+  ) +
+  theme_bw()
+
+p_all
+
+## 6. Optional: one panel per contrast (Label) ----------------------------
+
+p_by_label <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
+  geom_point(alpha = 0.4, size = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  facet_wrap(~ Label) +
+  labs(
+    title = "Run-to-run log2FC correlation by contrast",
+    x = "log2FC (Initial runs)",
+    y = "log2FC (Reruns)"
+  ) +
+  theme_bw()
+
+p_by_label
+
+```
+
+```{r}
+ggsave("global_correlation_FPA.png", plot = p_all, width = 5, height = 4, dpi = 300)
+ggsave("correlation-by-group_FPA.png", plot = p_by_label, width = 6, height = 5, dpi = 300)
+```
+
+Use this chunk for the 'DE_results' from FragPipe-Analyst
+```{r}
+run1_file <- "DE_results_FPA_initial.csv"
+run2_file <- "DE_results_FPA_reruns.csv"
+
+## Read everything as character so we don't lose '#NAME?' / 'Inf' info
+run1 <- read_csv(run1_file, col_types = cols(.default = col_character()))
+run2 <- read_csv(run2_file, col_types = cols(.default = col_character()))
+
+## 2. Clean + reshape: wide -> long, recode special log2FC values ---------
+
+clean_fc <- function(df) {
+  df %>%
+    ## Simplify column names for later use
+    rename(
+      Protein = `Protein ID`,
+      Gene    = `Gene Name`
+    ) %>%
+    ## One row per Protein × contrast
+    pivot_longer(
+      cols = ends_with("log2 fold change"),
+      names_to = "Label",
+      names_pattern = "(.*)_log2 fold change",   # strip the suffix
+      values_to = "log2FC"
+    ) %>%
+    ## Recode #NAME? and Inf, then convert to numeric
+    mutate(
+      log2FC = case_when(
+        log2FC == "#NAME?" ~ "-10",   # treat as strong negative FC
+        log2FC == "Inf"    ~ "10",    # clamp +Inf
+        log2FC == "-Inf"   ~ "-10",   # clamp -Inf
+        TRUE               ~ log2FC
+      ),
+      log2FC = as.numeric(log2FC)
+    ) %>%
+    ## Keep only finite fold-changes
+    filter(!is.na(log2FC))
+}
+
+run1_long <- clean_fc(run1) %>% rename(log2FC_run1 = log2FC)
+run2_long <- clean_fc(run2) %>% rename(log2FC_run2 = log2FC)
+
+## 3. Join runs on Protein + Label (and keep Gene for reference) -----------
+
+fc_pairs <- inner_join(
+  run1_long,
+  run2_long,
+  by = c("Protein", "Gene", "Label")
+)
+
+## Optional: restrict to one contrast, e.g.:
+# fc_pairs <- fc_pairs %>% filter(Label == "ALOD4DF_vs_ALOD4UF")
+
+## 4. Correlations ---------------------------------------------------------
+
+pearson_r  <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "pearson")
+spearman_r <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "spearman")
+
+pearson_r
+spearman_r
+
+fit <- lm(log2FC_run2 ~ log2FC_run1, data = fc_pairs)
+
+summary(fit)$r.squared
+summary(fit)$adj.r.squared
+
+## 5. Global scatterplot of log2FC between runs ---------------------------
+
+p_all <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
+  geom_point(alpha = 0.4, size = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +  # 1:1 line
+  geom_smooth(method = "lm", se = FALSE) +                       # blue regression line
+  annotate(
+    "text",
+    x = min(fc_pairs$log2FC_run1, na.rm = TRUE),
+    y = max(fc_pairs$log2FC_run2, na.rm = TRUE),
+    hjust = 0, vjust = 1,
+    label = paste0("Pearson r = ", round(pearson_r, 2),
+                   "\nSpearman rho = ", round(spearman_r, 2))
+  ) +
+  labs(
+    title = "Protein-level log2 fold changes: Run 1 vs Run 2",
+    x = "log2FC (Initial runs)",
+    y = "log2FC (Reruns)"
+  ) +
+  theme_bw()
+
+p_all
+
+## 6. Optional: one panel per contrast (Label) ----------------------------
+
+p_by_label <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
+  geom_point(alpha = 0.4, size = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  facet_wrap(~ Label) +
+  labs(
+    title = "Run-to-run log2FC correlation by contrast",
+    x = "log2FC (Initial runs)",
+    y = "log2FC (Reruns)"
+  ) +
+  theme_bw()
+
+p_by_label
+```
+

@@ -1,0 +1,77 @@
+---
+title: "MSstats-multiple-comparisons_conversion"
+output: html_document
+date: "2025-04-08"
+---
+
+```{r setup, include=FALSE}
+library(pbapply)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(tidyverse)
+library(dplyr)
+```
+
+```{r}
+setwd("C:/Users/andbp/Documents/R_data/MSstats_data-transform/")
+
+data <- read.csv("comparison_results_search5_median-norm.csv")
+
+unique_labels <- unique(data$Label)
+
+# Create a list to store all dataframes
+label_dataframes <- list()
+
+# For each unique label, create a separate dataframe
+for(label in unique_labels) {
+  # Filter data for current label
+  subset_data <- data %>%
+    filter(Label == label) %>%
+    # Select and rename columns as needed
+    select(
+      ProteinID = Protein,
+      Label,
+      FC = log2FC,
+      p_value = pvalue,
+      adj.pvalue = adj.pvalue,
+      SE,
+      Tvalue = Tvalue,
+      DF
+    ) %>%
+    # Handle infinite values in FC
+    mutate(
+      FC = case_when(
+        FC == Inf ~ 10,
+        FC == -Inf ~ -10,
+        TRUE ~ FC
+      ),
+      # Add empty columns to match desired format
+      diffexpressed = NA,
+      selected_labels = NA
+    )
+  
+  # Store the dataframe in the list with the label as the name
+  label_dataframes[[label]] <- subset_data
+}
+```
+
+
+```{r}
+write.csv(transformed_data, "transformed_data.csv", row.names = FALSE)
+```
+
+
+Save each dataframe to a separate CSV file
+```{r}
+for(label in unique_labels) {
+  write.csv(label_dataframes[[label]], 
+            file = paste0(label, "_search5_median-norm_transformed-data_4May25.csv"), 
+            row.names = FALSE)
+}
+```
+

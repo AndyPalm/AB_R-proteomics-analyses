@@ -1,0 +1,109 @@
+---
+title: "Mouse_human_mapping"
+output: html_document
+---
+
+```{r}
+library(pbapply)
+library(stringr)
+library(readxl)
+library(tidyverse)
+library(dplyr)
+```
+
+grab lookup table from web - only needs to be done once
+```{r}
+mouse-human_orthologs_table = read.csv("http://www.informatics.jax.org/downloads/reports/HOM_MouseHumanSequence.rpt",sep="\t")
+write.csv(mouse-human_orthologs_table, file="mouse-human_orthologs_table_.csv",row.names = F)
+```
+
+import lookup table and mouse genes list
+```{r}
+lookup_table <- read_excel("~/R_data/AP2-132_7-12_mouse/mouse_human_lookup-table-AB.xlsx")
+mouse_genes <-read.csv("~/R_data/AP2-132_7-12_mouse/AP2-132-fp20_combined-protein-mouse-genes.csv")
+```
+
+```{r}
+
+find_match <- function(protein_id, lookup_df) {
+  matches <- lookup_df %>%
+    filter(str_detect(ProteinID, fixed(protein_id))) %>%
+    slice(1)
+  
+  if (nrow(matches) == 0) {
+    return(NULL)
+  } else {
+    return(matches)
+  }
+}
+
+process_data <- function(mouse_genes, lookup_table) {
+  result <- mouse_genes %>%
+    rowwise() %>%
+    mutate(
+      match_info = list(find_match(ProteinID, lookup_table)),
+      lookup = ifelse(!is.null(match_info), 1, 0),
+      DB.Class.Key = ifelse(!is.null(match_info), match_info$DB.Class.Key, NA)
+    ) %>%
+    ungroup()
+  
+  human_lookup <- lookup_table %>%
+    filter(Common.Organism.Name == "human") %>%
+    group_by(DB.Class.Key) %>%
+    slice(1) %>%
+    ungroup() %>%
+    select(DB.Class.Key, ProteinID.human = ProteinID, Gene.human = Gene)
+  
+  result <- result %>%
+    left_join(human_lookup, by = "DB.Class.Key")
+  
+  result <- result %>%
+    mutate(
+      ProteinID.human = ifelse(is.na(ProteinID.human) & lookup == 1, ProteinID, ProteinID.human),
+      Gene.human = ifelse(is.na(Gene.human) & lookup == 1, Gene, Gene.human),
+      lookup = ifelse(is.na(ProteinID.human), 0, lookup),
+      ProteinID.human = str_extract(ProteinID.human, "^[^,]+")
+    ) %>%
+    select(-match_info, -DB.Class.Key)
+  
+  return(result)
+}
+
+result <- process_data(mouse_genes, lookup_table)
+```
+
+Write result
+```{r}
+write.csv(result, file="mouse-to-human_mapped_FP20.csv",row.names = F)
+```
+
+Find multiple matches
+```{r}
+find_multiple_matches <- function(mouse_genes, lookup_table) {
+
+  find_all_matches <- function(protein_id, lookup_df) {
+    matches <- lookup_df %>%
+      filter(str_detect(ProteinID, fixed(protein_id)))
+    return(matches)
+  }
+  
+  diagnostic_result <- mouse_genes %>%
+    rowwise() %>%
+    mutate(
+      all_matches = list(find_all_matches(ProteinID, lookup_table)),
+      match_count = nrow(all_matches),
+      human_matches = list(all_matches %>% filter(Common.Organism.Name == "human")),
+      human_match_count = nrow(human_matches)
+    ) %>%
+    ungroup()
+  
+  multiple_matches <- diagnostic_result %>%
+    filter(human_match_count > 1) %>%
+    select(ProteinID, Gene, match_count, human_match_count)
+  
+  return(multiple_matches)
+}
+
+multiple_matches <- find_multiple_matches(mouse_genes, lookup_table)
+```
+

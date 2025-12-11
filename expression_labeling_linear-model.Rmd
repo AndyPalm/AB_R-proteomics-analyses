@@ -1,0 +1,462 @@
+---
+title: "AP2-150_linear-model"
+output: html_document
+date: "2025-08-01"
+---
+```{r}
+library(tidyverse)
+library(stringr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(broom)
+library(msigdbr)
+library(ggplot2)
+```
+
+```{r}
+setwd("~/R_data/AP2-150_linear-model/")
+labeling.df <- read.csv("labeling_FP.csv")
+expression.df <- read.csv("expression_FP.csv")
+
+
+# For reproducibility
+set.seed(123)
+```
+
+
+
+```{r}
+# Reshape expression data from wide to long format
+expression_long <- expression.df %>%
+  # Pivot the intensity columns into a long format using a regex pattern
+  # The pattern captures three groups: (Condition)_(Replicate).(Intensity)
+  pivot_longer(
+    cols = matches("parental|SRB1"), # Selects all columns containing 'parental' or 'SRB1'
+    names_to = c("Condition", "Replicate", ".value"),
+    names_pattern = "(.*)_(.*)\\.(.*)" # Regex: (group1)_(group2).(group3)
+  ) %>%
+  # Standardize condition names and select relevant columns
+  mutate(Condition = recode(Condition, "parental" = "Parental", "SRB1" = "SRB1_oe")) %>%
+  rename(Expression_Intensity = Intensity) %>%
+  select(ProteinID, Gene, Condition, Replicate, Expression_Intensity)
+
+# Reshape labeling data from wide to long format
+labeling_long <- labeling.df %>%
+  # Use the same pivoting strategy for the labeling data
+  pivot_longer(
+    cols = matches("control|treatment"), # Selects all columns containing 'control' or 'treatment'
+    names_to = c("Condition", "Replicate", ".value"),
+    names_pattern = "(.*)_(.*)\\.(.*)" # Regex: (group1)_(group2).(group3)
+  ) %>%
+  # Standardize condition names and select relevant columns
+  mutate(Condition = recode(Condition, "control" = "Parental", "treatment" = "SRB1_oe")) %>%
+  rename(Labeling_Intensity = Intensity) %>%
+  select(ProteinID, Gene, Condition, Replicate, Labeling_Intensity)
+
+# Merge the two long data frames into a single master data frame
+master_df <- inner_join(
+  labeling_long,
+  expression_long,
+  by = c("ProteinID", "Gene", "Condition", "Replicate")
+) %>%
+  # Convert Condition to a factor for modeling with "Parental" as the reference level
+  mutate(Condition = factor(Condition, levels = c("Parental", "SRB1_oe")))
+
+
+# --- Part 1: Per-Protein Linear Modeling ---
+
+# Define a function to safely fit the linear model for one protein
+fit_proximity_model_safe <- function(df) {
+  tryCatch({
+    # Model Labeling Intensity as a function of Condition, while controlling for Expression Intensity
+    model <- lm(Labeling_Intensity ~ Condition + Expression_Intensity, data = df)
+    tidy(model) # 'tidy' from broom package converts model output to a nice data frame
+  }, error = function(e) {
+    return(NULL) # Return NULL if there's an error
+  })
+}
+
+# Apply the model to every protein using dplyr and purrr
+model_results <- master_df %>%
+  group_by(ProteinID, Gene) %>%
+  nest() %>% # Nests data for each protein into a list-column called 'data'
+  mutate(model_fit = map(data, fit_proximity_model_safe)) %>%
+  select(ProteinID, Gene, model_fit) %>%
+  unnest(model_fit)
+
+# Extract final Proximity Scores, correcting p-values for multiple tests
+proximity_scores <- model_results %>%
+  filter(term == "ConditionSRB1_oe") %>% # This term represents the effect of SR-B1 overexpression
+  select(
+    ProteinID,
+    Gene,
+    Proximity_Shift_Score = estimate, # The 'estimate' is the log2FC corrected for abundance
+    p.value
+  ) %>%
+  ungroup() %>%
+  mutate(adj.p.value = p.adjust(p.value, method = "BH")) %>% # Benjamini-Hochberg correction
+  arrange(adj.p.value)
+
+# Display the top hits
+cat("--- Top Hits from Linear Model (Proximity Shift Score) ---\n")
+print(head(proximity_scores))
+
+
+# --- Part 2: Pathway-Level Correlation Analysis ---
+
+# First, calculate the standard (uncorrected) log2 Fold Changes
+fc_data <- master_df %>%
+  group_by(ProteinID, Gene, Condition) %>%
+  # Get the mean intensity for each condition
+  summarise(
+    avg_labeling = mean(Labeling_Intensity, na.rm = TRUE),
+    avg_expression = mean(Expression_Intensity, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  # Pivot wider to get conditions in separate columns for subtraction
+  pivot_wider(
+    names_from = Condition,
+    values_from = c(avg_labeling, avg_expression)
+  ) %>%
+  # Calculate log2 Fold Change
+  mutate(
+    log2FC_labeling = avg_labeling_SRB1_oe - avg_labeling_Parental,
+    log2FC_expression = avg_expression_SRB1_oe - avg_expression_Parental
+  ) %>%
+  # Keep only the necessary columns
+  select(ProteinID, Gene, log2FC_labeling, log2FC_expression) %>%
+  # Remove rows with NA/infinite values that can result from missing data
+  filter(is.finite(log2FC_labeling) & is.finite(log2FC_expression))
+
+go_sets <- msigdbr(species = "Homo sapiens", collection = "C5", subcollection = "GO:CC")
+
+pathway_fc_data <- inner_join(go_sets, fc_data, by = c("gene_symbol" = "Gene"))
+
+# Calculate per-pathway Spearman correlation
+pathway_correlations <- pathway_fc_data %>%
+  group_by(gs_name, gs_id) %>% # Group by pathway name/ID
+  # Only consider pathways with a reasonable number of identified proteins
+  filter(n() >= 15) %>%
+  summarise(
+    spearman_corr = cor(log2FC_labeling, log2FC_expression, method = "spearman"),
+    protein_count = n(),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(spearman_corr))
+
+cat("\n--- Pathway Correlation Analysis Results ---\n")
+print(head(pathway_correlations))
+```
+
+
+```{r}
+# 1. Volcano plot for the linear model results (Proximity Shift Score)
+proximity_scores <- proximity_scores %>%
+  mutate(significance = case_when(
+    adj.p.value < 0.05 & Proximity_Shift_Score > 1  ~ "Upregulated Proximity",
+    adj.p.value < 0.05 & Proximity_Shift_Score < -1 ~ "Downregulated Proximity",
+    TRUE                                            ~ "Not Significant"
+  ))
+
+volcano_plot <- ggplot(proximity_scores, aes(x = Proximity_Shift_Score, y = -log10(adj.p.value), color = significance)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = c("Upregulated Proximity" = "#bd4a7f", "Downregulated Proximity" = "#67a5c7", "Not Significant" = "grey")) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "SR-B1 Dependent Proximity Shift",
+    x = "Proximity Shift Score (log2FC, abundance-corrected)",
+    y = "-log10(Adjusted p-value)"
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed")
+  #scale_x_continuous(limits = c(-20, 20), breaks = seq(-20, 20, 4))
+
+print(volcano_plot)
+
+proximity_scores_for_raw_plot <- proximity_scores %>%
+  mutate(significance_raw = case_when(
+    p.value < 0.05 & Proximity_Shift_Score > 1  ~ "Upregulated Proximity",
+    p.value < 0.05 & Proximity_Shift_Score < -1 ~ "Downregulated Proximity",
+    TRUE                                        ~ "Not Significant"
+  ))
+
+volcano_plot_raw_p <- ggplot(proximity_scores_for_raw_plot, aes(x = Proximity_Shift_Score, y = -log10(p.value), color = significance_raw)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(
+    values = c("Upregulated Proximity" = "#bd4a7f", "Downregulated Proximity" = "#67a5c7", "Not Significant" = "grey"),
+    name = "Significance (p < 0.05)" # Legend title
+  ) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "SR-B1 Dependent Proximity Shift (using Raw p-values)",
+    x = "Proximity Shift Score (log2FC, abundance-corrected)",
+    y = "-log10(p-value)"
+  ) +
+  # Add the significance threshold lines
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed")
+
+print(volcano_plot_raw_p)
+
+# 2. Bar chart for the pathway correlation results
+# Let's visualize the top 10 and bottom 10 correlated pathways
+top_and_bottom_pathways <- pathway_correlations %>%
+  slice_head(n = 10) %>%
+  bind_rows(slice_tail(pathway_correlations, n = 10))
+
+correlation_barchart <- ggplot(top_and_bottom_pathways, aes(x = spearman_corr, y = reorder(gs_name, spearman_corr), fill = spearman_corr)) +
+  geom_col() +
+  scale_fill_gradient2(low = "#67a5c7", mid = "white", high = "#bd4a7f", name = "Spearman's r") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Coordination of Protein Expression and Cholesterol Proximity",
+    x = "Spearman Correlation (log2FC_expression vs log2FC_labeling)",
+    y = "GO Cellular Component Pathway"
+  )
+
+print(correlation_barchart)
+
+```
+
+
+Volcano plots with custom labels
+```{r}
+# --- Section 9: Highlighting Selected Proteins on Volcano Plots ---
+#
+# This block reads a list of proteins from an Excel file and adds black
+# circles around them on the two volcano plots we generated earlier.
+#
+# INSTRUCTIONS:
+# Ensure the 'readxl' package is installed and that the file path to your
+# Excel file is correct.
+#------------------------------------------------------------------------------------
+
+protein_labels_to_highlight <- read_excel("~/R_data/AP2-150_linear-model/AP2-150_linear-model_selected-labels.xlsx")
+
+highlight_ids <- protein_labels_to_highlight$ProteinID
+
+# 3. Create a new data frame containing only the data for the proteins to be highlighted.
+#    This is a cleaner approach than using subset() inside ggplot.
+highlight_data <- proximity_scores %>%
+  filter(ProteinID %in% highlight_ids)
+
+# 4. Re-generate the base volcano plots (so we can add a layer to them)
+
+# Base plot with Adjusted p-values
+volcano_plot_adj <- ggplot(proximity_scores, aes(x = Proximity_Shift_Score, y = -log10(adj.p.value))) +
+  geom_point(aes(color = significance), alpha = 0.6) + # Points for all proteins
+  scale_color_manual(values = c("Upregulated Proximity" = "#bd4a7f", "Downregulated Proximity" = "#67a5c7", "Not Significant" = "grey")) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "SR-B1 Dependent Proximity Shift",
+    x = "Proximity Shift Score (log2FC, abundance-corrected)",
+    y = "-log10(Adjusted p-value)"
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed")
+
+# Base plot with Raw p-values
+volcano_plot_raw <- ggplot(proximity_scores, aes(x = Proximity_Shift_Score, y = -log10(p.value))) +
+  geom_point(aes(color = significance_raw), alpha = 0.6) + # Assumes 'significance_raw' column was created
+  scale_color_manual(values = c("Upregulated Proximity" = "#bd4a7f", "Downregulated Proximity" = "#67a5c7", "Not Significant" = "grey")) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "SR-B1 Dependent Proximity Shift (Raw p-values)",
+    x = "Proximity Shift Score (log2FC, abundance-corrected)",
+    y = "-log10(Raw p-value)"
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed")
+
+
+# 5. Add the highlighting layer to each plot and display the results
+
+# For the Adjusted P-value Plot:
+volcano_adj_highlighted <- volcano_plot_adj +
+  scale_x_continuous(limits = c(-20, 20), breaks = seq(-20, 20, 4)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  geom_point(
+    data = highlight_data,
+    # The aes() must match the base plot's axes
+    aes(x = Proximity_Shift_Score, y = -log10(adj.p.value)),
+    color = "black",
+    size = 1.5,      # A slightly larger size makes the circle more visible
+    stroke = 1,    # Controls the thickness of the circle line
+    shape = 1      # Shape 1 is a hollow circle
+  )
+
+cat("\nDisplaying volcano plot (Adjusted p-value) with highlighted proteins...\n")
+print(volcano_adj_highlighted)
+
+# For the Raw P-value Plot:
+volcano_raw_highlighted <- volcano_plot_raw +
+  geom_point(
+    data = highlight_data,
+    # The aes() must match this plot's y-axis
+    aes(x = Proximity_Shift_Score, y = -log10(p.value)),
+    color = "black",
+    size = 1.5,
+    stroke = 1,
+    shape = 1
+  )
+
+cat("\nDisplaying volcano plot (Raw p-value) with highlighted proteins...\n")
+print(volcano_raw_highlighted)
+```
+
+
+
+
+
+```{r}
+msigdbr::msigdbr_collections()      #run this to view the different collections available for use
+
+# Example:L GO Biological Process
+# TARGET_COLLECTION <- "C5"
+# TARGET_SUBCOLLECTION <- "GO:BP"
+```
+
+```{r}
+# --- Section 6: Modular Pathway Correlation Analysis ---
+#
+# INSTRUCTIONS:
+# To change the pathway library, simply modify the values for
+# TARGET_COLLECTION and TARGET_SUBCOLLECTION below, then re-run this entire code block.
+# Refer to the output of msigdbr_collections() for all available options.
+#
+#------------------------------------------------------------------------------------
+# ----> 1. SET YOUR DESIRED PATHWAY LIBRARY HERE <----
+
+# Example 1: Hallmark Gene Sets (excellent for high-level overview)
+TARGET_COLLECTION <- "C5"
+TARGET_SUBCOLLECTION <- "GO:MF" # Hallmark sets have no subcollection, so use NA
+
+# Example 2: KEGG Pathways (classic signaling/metabolism)
+# TARGET_COLLECTION <- "C2"
+# TARGET_SUBCOLLECTION <- "CP:KEGG"
+
+# Example:L GO Biological Process
+# TARGET_COLLECTION <- "C5"
+# TARGET_SUBCOLLECTION <- "GO:BP"
+
+#------------------------------------------------------------------------------------
+
+# 2. Fetch the chosen gene set library from MSigDB
+cat(paste("\nFetching gene sets for collection:", TARGET_COLLECTION, "\n"))
+new_gene_sets <- msigdbr(
+  species = "Homo sapiens",
+  collection = TARGET_COLLECTION,
+  subcollection = TARGET_SUBCOLLECTION
+)
+
+# 3. Join the new pathway definitions with your fold-change data
+#    (Assumes the 'fc_data' data frame already exists from your previous code)
+pathway_fc_data_new <- inner_join(new_gene_sets, fc_data, by = c("gene_symbol" = "Gene"))
+
+# 4. Calculate the per-pathway Spearman correlation for the new library
+pathway_correlations_new <- pathway_fc_data_new %>%
+  group_by(gs_name) %>% # Group by pathway name
+  filter(n() >= 10) %>% # Filter for pathways with at least 10 members in your data
+  summarise(
+    spearman_corr = cor(log2FC_labeling, log2FC_expression, method = "spearman", use = "complete.obs"),
+    protein_count = n(),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(spearman_corr))
+
+cat("\n--- New Pathway Correlation Analysis Results ---\n")
+print(head(pathway_correlations_new))
+
+# 5. Generate and display a bar chart for the new results
+#    (Visualizing top 10 and bottom 5 for clarity)
+top_and_bottom_new <- pathway_correlations_new %>%
+  slice_head(n = 10) %>%
+  bind_rows(slice_tail(pathway_correlations_new, n = 5))
+
+new_correlation_barchart <- ggplot(top_and_bottom_new, aes(x = spearman_corr, y = reorder(gs_name, spearman_corr), fill = spearman_corr)) +
+  geom_col() +
+  scale_fill_gradient2(low = "#67a5c7", mid = "white", high = "#bd4a7f", name = "Spearman's r") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = paste("Pathway Correlation Analysis:", TARGET_COLLECTION),
+    subtitle = "Coordination of Protein Expression and Cholesterol Proximity",
+    x = "Spearman Correlation (log2FC_expression vs log2FC_labeling)",
+    y = "Pathway / Gene Set"
+  )
+
+print(new_correlation_barchart)
+
+# --- Section 7: Final Publication-Quality Plotting ---
+#
+# This block fixes the cut-off labels by:
+#  1. Cleaning up the long GO Term names (removing "GOMF_" and replacing underscores).
+#  2. Increasing the left margin of the plot to make space for the labels.
+#------------------------------------------------------------------------------------
+
+# Assumes 'pathway_correlations_new' has been created from the previous step.
+
+# 1. Prepare the data for plotting
+plot_data_final <- pathway_correlations_new %>%
+  # Select the top 10 and bottom 5 correlated pathways for a clean plot
+  slice_head(n = 10) %>%
+  bind_rows(slice_tail(pathway_correlations_new, n = 5)) %>%
+  # Create a new, cleaned-up label column for plotting
+  mutate(
+    # First, remove the "GOMF_" prefix from the pathway names
+    clean_gs_name = gsub("GOMF_", "", gs_name),
+    # Next, replace all underscores with spaces
+    clean_gs_name = gsub("_", " ", clean_gs_name),
+    # Optional: Convert to a more readable title case
+    clean_gs_name = tools::toTitleCase(tolower(clean_gs_name))
+  )
+
+# 2. Generate the plot with cleaned labels and adjusted margins
+final_correlation_barchart <- ggplot(plot_data_final, aes(x = spearman_corr, y = reorder(clean_gs_name, spearman_corr), fill = spearman_corr)) +
+  geom_col() +
+  scale_fill_gradient2(low = "#67a5c7", mid = "white", high = "#bd4a7f", name = "Spearman's r") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = paste("Pathway Correlation Analysis:", TARGET_COLLECTION), # Uses the variable from your previous chunk
+    subtitle = "Coordination of Protein Expression and Cholesterol Proximity",
+    x = "Spearman Correlation (log2FC_expression vs log2FC_labeling)",
+    y = "" # We can remove the y-axis title as the labels are self-explanatory
+  ) +
+  # ----> THIS IS THE KEY FIX <----
+  # Adjust the plot margin: theme(plot.margin = unit(c(top, right, bottom, left), "units"))
+  # We are adding 3 cm of space to the left margin. You can adjust this number as needed.
+  theme(plot.margin = unit(c(1, 1, 1, 3), "cm"))
+
+print(final_correlation_barchart)
+
+```
+
+
+
+```{r}
+ggsave("AP2-150_volcano_selected-labels_notext_26aug25.png", plot = volcano_adj_highlighted, width = 8, height = 5, dpi=1200)
+```
+
+```{r}
+write.csv(proximity_scores_for_raw_plot, file = "AP2-150_linear-model_proximtiy-scores.csv", row.names = FALSE)
+```
+
+```{r}
+ggsave("AP2-133_136_150_correlation_20july25_all-primary-circled.png", plot = , width = 8, height = 5, dpi=1200)
+```
+
+```{r}
+write.csv(
+  model_results,
+  file = "pathway_correlation_summary_results.csv",
+  row.names = FALSE)
+```
+
+```{r}
+write.csv(
+  pathway_fc_data_new,
+  file = "pathway_correlation_detailed_data.csv",
+  row.names = FALSE)
+```
+

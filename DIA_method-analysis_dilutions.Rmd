@@ -1,0 +1,958 @@
+---
+title: "DIA_quantification_analysis-296-dilution"
+output: html_document
+date: "2025-10-09"
+R version: 4.4.3
+---
+
+```{r setup, include=FALSE}
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(dplyr)
+library(readr)
+library(readxl)
+library(tidyverse)
+library(janitor)
+library(pbapply)
+```
+
+```{r}
+#============================================#
+# SETUP: Paths & Helper Functions           #
+#============================================#
+
+setwd("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-341/")
+root_dir <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-341/"   
+out_dir  <- file.path(root_dir, "analysis_outputs")
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# --- File parsing functions ---
+parse_subset <- function(fn){
+  case_when(
+    str_detect(fn, "HQfeatures") ~ "highQuality",
+    str_detect(fn, "top3")       ~ "top3",
+    str_detect(fn, "top4")       ~ "top4",
+    str_detect(fn, "top5")       ~ "top5",
+    str_detect(fn, "top10")      ~ "top10",
+    str_detect(fn, "top50")      ~ "top50",
+    TRUE                         ~ "unknown"
+  )
+}
+
+parse_table <- function(fn){
+  case_when(
+    str_detect(fn, "feature-level-data") ~ "feature",
+    str_detect(fn, "protein-level-data") ~ "protein",
+    str_detect(fn, "comparison-results") ~ "comparison",
+    str_detect(fn, "modelqc")            ~ "modelqc",
+    TRUE                                 ~ "other"
+  )
+}
+
+parse_imputation_flag <- function(fn){
+  !str_detect(fn, "NOT-imputed")
+}
+
+# --- Data parsing functions ---
+get_expected_fc <- function(lbl){
+  m <- str_match(lbl, "([0-9]+)X_vs_([0-9]+)X")
+  a <- suppressWarnings(as.numeric(m[,2]))
+  b <- suppressWarnings(as.numeric(m[,3]))
+  ifelse(is.na(a) | is.na(b), NA_real_, log2(a/b))
+}
+
+parse_method_from_label <- function(lbl){
+  case_when(
+    str_detect(lbl, "narrow") ~ "narrow",
+    str_detect(lbl, "wide")   ~ "wide",
+    TRUE ~ NA_character_
+  )
+}
+
+parse_dilution <- function(g){
+  as.numeric(str_extract(g, "^[0-9]+"))
+}
+
+parse_method_from_group <- function(g){
+  case_when(
+    str_detect(g, "narrow") ~ "narrow",
+    str_detect(g, "wide")   ~ "wide",
+    TRUE ~ NA_character_
+  )
+}
+
+get_label_sides <- function(lbl){
+  m <- str_match(lbl, "([0-9]+)X_vs_([0-9]+)X")
+  g1 <- m[,2]
+  g2 <- m[,3]
+  method <- parse_method_from_label(lbl)
+  tibble(
+    g1 = g1,
+    g2 = g2,
+    method = method,
+    g1_key = paste0(g1, method),
+    g2_key = paste0(g2, method)
+  )
+}
+
+order_featureSubset <- function(x){
+  factor(x, levels = c("highQuality", "top3", "top4", "top5", "top10", "top50")) ### helper function to give a logical ordering or groups as opposed to alphabetical
+}
+
+# --- Column name utilities ---
+clean_names_base <- function(x){
+  nm <- names(x)
+  nm <- tolower(gsub("[^A-Za-z0-9]+", "_", nm))
+  nm <- gsub("^_|_$", "", nm)
+  names(x) <- nm
+  x
+}
+
+promote_name <- function(df, primary, alts){
+  if (!(primary %in% names(df))) {
+    alt <- alts[alts %in% names(df)]
+    if (length(alt)) df <- rename(df, !!primary := all_of(alt[1]))
+  }
+  df
+}
+
+coerce_numeric <- function(df, cols){
+  cols <- intersect(cols, names(df))
+  if (length(cols)) {
+    df <- df %>% mutate(across(all_of(cols),
+                               ~ suppressWarnings(as.numeric(as.character(.)))))
+  }
+  df
+}
+
+#============================================#
+# DATA IMPORT & PREPROCESSING                #
+#============================================#
+
+# Build file index
+files <- list.files(root_dir, pattern = "\\.csv$", full.names = TRUE)
+
+file_index <- tibble(file = files, fn = basename(files)) %>%
+  mutate(
+    featureSubset = parse_subset(fn),
+    table_type    = parse_table(fn),
+    imputed       = parse_imputation_flag(fn)
+  ) %>%
+  filter(table_type %in% c("feature", "protein", "comparison", "modelqc"),
+         imputed) %>%
+  arrange(featureSubset, table_type, fn)
+
+# Read all CSVs with type coercion
+read_csv_smart <- function(f){
+  df <- suppressMessages(read_csv(f, guess_max = 200000, show_col_types = FALSE))
+  clean_names_base(df)
+}
+
+lst <- lapply(seq_len(nrow(file_index)), function(i){
+  row <- file_index[i, ]
+  df  <- read_csv_smart(row$file)
+  
+  df$featureSubset <- row$featureSubset
+  df$table_type    <- row$table_type
+  df$source_file   <- row$fn
+  
+  # Table-specific numeric coercion
+  if (row$table_type == "comparison") {
+    df <- coerce_numeric(df, c("log2fc", "se", "tvalue", "df", "pvalue", 
+                               "adj_pvalue", "missingpercentage", "imputationpercentage"))
+    df <- df %>% mutate(across(any_of(c("label", "protein", "proteinname", "issue")), as.character))
+  } else if (row$table_type == "modelqc") {
+    df <- coerce_numeric(df, c("abundance", "residuals", "fitted", "totalgroupmeasurements",
+                               "numimputedfeature", "nummeasuredfeature", "missingpercentage"))
+  } else if (row$table_type == "protein") {
+    df <- coerce_numeric(df, c("abundance", "logintensities", "totalgroupmeasurements",
+                               "nummeasuredfeature", "missingpercentage", "numimputedfeature",
+                               "residuals", "fitted"))
+  } else if (row$table_type == "feature") {
+    df <- coerce_numeric(df, c("abundance", "newabundance", "intensity", "fraction"))
+    df <- df %>% mutate(across(any_of(c("peptide", "feature", "feature_id")), as.character))
+  }
+  df
+})
+
+all_df <- bind_rows(lst)
+
+#============================================#
+# SPLIT & HARMONIZE TABLES                   #
+#============================================#
+
+# Split by table type
+cmp  <- all_df %>% filter(table_type == "comparison")
+qc   <- all_df %>% filter(table_type == "modelqc")
+prot <- all_df %>% filter(table_type == "protein")
+feat <- all_df %>% filter(table_type == "feature")
+
+# Harmonize column names and add derived columns
+cmp <- cmp %>%
+  promote_name("label", c("comparison", "contrast")) %>%
+  promote_name("protein", c("proteinname")) %>%
+  promote_name("log2fc", c("logfc", "log2_fold_change")) %>%
+  promote_name("adj_pvalue", c("adj_p.value", "adj.pvalue", "adj_p.value")) %>%
+  mutate(
+    protein = as.character(protein),
+    label = as.character(label),
+    log2fc = suppressWarnings(as.numeric(log2fc)),
+    pvalue = suppressWarnings(as.numeric(pvalue)),
+    adj_pvalue = suppressWarnings(as.numeric(adj_pvalue)),
+    missingpercentage = suppressWarnings(as.numeric(missingpercentage)),
+    imputationpercentage = suppressWarnings(as.numeric(imputationpercentage)),
+    method = parse_method_from_label(label),
+    expected_log2fc = get_expected_fc(label),
+    fc_error = log2fc - expected_log2fc
+  )
+
+qc <- qc %>%
+  promote_name("protein", c("proteinname")) %>%
+  promote_name("group", c("label", "condition")) %>%
+  mutate(
+    protein = as.character(protein),
+    group = as.character(group),
+    dilution_x = parse_dilution(group),
+    method = parse_method_from_group(group),
+    totalgroupmeasurements = suppressWarnings(as.numeric(totalgroupmeasurements)),
+    numimputedfeature = suppressWarnings(as.numeric(numimputedfeature)),
+    impute_frac = ifelse(is.finite(totalgroupmeasurements) & totalgroupmeasurements > 0,
+                         numimputedfeature / totalgroupmeasurements, NA_real_)
+  )
+
+prot <- prot %>%
+  promote_name("protein", c("proteinname")) %>%
+  promote_name("group", c("label", "condition")) %>%
+  mutate(
+    protein = as.character(protein),
+    group = as.character(group),
+    logintensities = suppressWarnings(as.numeric(logintensities)),
+    dilution_x = parse_dilution(group),
+    method = parse_method_from_group(group)
+  )
+
+feat <- feat %>%
+  promote_name("protein", c("proteinname")) %>%
+  promote_name("peptide", c("peptidesequence")) %>%
+  promote_name("feature_id", c("feature", "featureid")) %>%
+  promote_name("group", c("label", "condition")) %>%
+  mutate(
+    protein = as.character(protein),
+    peptide = as.character(peptide),
+    feature_id = as.character(feature_id),
+    group = as.character(group),
+    abundance = suppressWarnings(as.numeric(abundance)),
+    newabundance = suppressWarnings(as.numeric(newabundance)),
+    int_use = if_else(is.finite(abundance), abundance, newabundance),
+    dilution_x = parse_dilution(group),
+    method = parse_method_from_group(group)
+  )
+
+# Create clean comparison subset
+cmp_clean <- cmp %>%
+  filter(is.finite(log2fc), is.finite(expected_log2fc))
+
+# Diagnostics
+bad_labels <- cmp %>%
+  filter(!is.finite(expected_log2fc)) %>%
+  count(featureSubset, label, name = "n_rows") %>%
+  arrange(desc(n_rows))
+
+if (nrow(bad_labels) > 0) {
+  message("Labels with unparseable expected_log2fc: ", nrow(bad_labels), " unique labels")
+}
+
+message("\n=== Data Loading Complete ===")
+message("cmp rows:       ", nrow(cmp))
+message("cmp_clean rows: ", nrow(cmp_clean))
+message("qc rows:        ", nrow(qc))
+message("prot rows:      ", nrow(prot))
+message("feat rows:      ", nrow(feat))
+```
+
+Analyses and visualization
+```{r}
+#===========================#
+# 1) Coverage Analysis      #
+#===========================#
+
+coverage <- prot %>%
+  group_by(featureSubset, method, dilution_x) %>%
+  summarize(n_proteins = n_distinct(protein), .groups = "drop")
+
+write_csv(coverage, file.path(out_dir, "coverage_by_subset_method_dilution.csv"))
+
+p_cov <- coverage %>%
+  mutate(group_f = factor(paste0(dilution_x, "X-", method),
+                          levels = c("1X-narrow", "1X-wide", "5X-narrow", 
+                                     "5X-wide", "10X-narrow", "10X-wide"))) %>%
+  ggplot(aes(x = featureSubset, y = n_proteins, group = group_f, color = group_f)) +
+  geom_line(linewidth = 1) + 
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(title = "Protein Coverage by featureSubset",
+       y = "Proteins Quantified", 
+       x = "featureSubset", 
+       color = "Group") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(out_dir, "coverage_by_featureSubset.png"), 
+       p_cov, width = 10, height = 6, dpi = 300)
+
+#=============================================#
+# 2) Fold-Change Error vs featureSubset       #
+#=============================================#
+
+fc_summary <- cmp_clean %>%
+  group_by(featureSubset, label, method) %>%
+  summarize(
+    n = n(),
+    median_error = median(fc_error, na.rm = TRUE),
+    median_abs_error = median(abs(fc_error), na.rm = TRUE),
+    q95_abs_error = quantile(abs(fc_error), 0.95, na.rm = TRUE),
+    rmse = sqrt(mean(fc_error^2, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+write_csv(fc_summary, file.path(out_dir, "fc_error_summary.csv"))
+
+p_fc_err <- cmp_clean %>%
+  mutate(featureSubset = order_featureSubset(featureSubset)) %>%
+  ggplot(aes(x = featureSubset, y = abs(fc_error), fill = featureSubset)) +
+  geom_violin(scale = "width", trim = TRUE, color = "grey30") +
+  geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.7) +
+  facet_wrap(~ label, scales = "free_y", ncol = 3) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "Absolute log₂(FC) Error by featureSubset",
+       y = "|Observed − Expected| (log₂)", 
+       x = "featureSubset") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(out_dir, "fc_error_by_featureSubset.png"), 
+       p_fc_err, width = 14, height = 9, dpi = 300)
+
+#=============================================#
+# 3) Imputation Burden vs FC Error            #
+#=============================================#
+
+# Get imputation fraction per protein per group-key (e.g., "1narrow")
+impute_by_group <- qc %>%
+  mutate(group_key = paste0(dilution_x, method)) %>%
+  group_by(featureSubset, protein, group_key) %>%
+  summarize(
+    mean_impute_frac = mean(impute_frac, na.rm = TRUE),
+    mean_missing = mean(missingpercentage, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Parse label sides
+label_keys <- cmp_clean %>%
+  distinct(featureSubset, label) %>%
+  rowwise() %>%
+  mutate(tmp = list(get_label_sides(label))) %>%
+  unnest(cols = tmp) %>%
+  ungroup()
+
+# Join imputation data to comparisons
+cmp_impute <- cmp_clean %>%
+  left_join(label_keys, by = c("featureSubset", "label")) %>%
+  left_join(impute_by_group, 
+            by = c("featureSubset", "protein", "g1_key" = "group_key")) %>%
+  rename(impute_g1 = mean_impute_frac, miss_g1 = mean_missing) %>%
+  left_join(impute_by_group, 
+            by = c("featureSubset", "protein", "g2_key" = "group_key")) %>%
+  rename(impute_g2 = mean_impute_frac, miss_g2 = mean_missing) %>%
+  mutate(
+    pooled_impute = rowMeans(cbind(impute_g1, impute_g2), na.rm = TRUE),
+    pooled_missing = rowMeans(cbind(miss_g1, miss_g2), na.rm = TRUE)
+  )
+
+write_csv(cmp_impute, file.path(out_dir, "comparison_with_imputation_burden.csv"))
+
+# Scatter: |FC error| vs pooled imputation (matching Set3 colors)
+p_fc_imp <- cmp_impute %>%
+  filter(is.finite(pooled_impute)) %>%
+  mutate(featureSubset = order_featureSubset(featureSubset)) %>%
+  ggplot(aes(x = pooled_impute, y = abs(fc_error), color = featureSubset)) +
+  geom_point(alpha = 0.2, size = 1.2) +  # Reduced opacity from 0.4 to 0.2
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
+  facet_wrap(~ label, ncol = 3) +
+  scale_color_brewer(palette = "Set3") +  # Changed from Dark2 to Set3
+  labs(title = "FC Error vs Pooled Imputation Burden",
+       x = "Mean Imputed Fraction (across both groups)",
+       y = "|FC Error| (log₂)",
+       color = "featureSubset") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(out_dir, "fc_error_vs_imputation.png"), 
+       p_fc_imp, width = 14, height = 9, dpi = 300)
+
+#====================================#
+# 4) Dilution Calibration (Linearity) #
+#====================================#
+
+# Dilution map: expected relationship
+dil_map <- tibble(
+  dilution_x = c(1, 5, 10),
+  dose = log2(1 / c(1, 5, 10))  # 0, -2.322, -3.322
+)
+
+# Median logintensities per protein/method/dilution
+prot_med <- prot %>%
+  filter(dilution_x %in% c(1, 5, 10), 
+         is.finite(logintensities),
+         !is.na(method)) %>%
+  group_by(featureSubset, method, protein, dilution_x) %>%
+  summarize(ab_med = median(logintensities, na.rm = TRUE), .groups = "drop") %>%
+  left_join(dil_map, by = "dilution_x") %>%
+  filter(is.finite(ab_med), is.finite(dose))
+
+message("Proteins with calibration data: ", n_distinct(prot_med$protein))
+
+# Fit linear models per protein (abundance ~ log2(1/dilution))
+calib <- prot_med %>%
+  group_by(featureSubset, method, protein) %>%
+  summarise(
+    fit_result = list({
+      df <- cur_data()
+      n_pts <- nrow(df)
+      n_dil <- n_distinct(df$dilution_x)
+      
+      if (n_pts < 2 || n_dil < 2) {
+        tibble(slope = NA_real_, intercept = NA_real_, 
+               r2 = NA_real_, n_dil_used = n_dil)
+      } else if (n_dil == 2) {
+        # Two points: direct slope calculation
+        df <- arrange(df, dose)
+        tibble(
+          slope = diff(df$ab_med) / diff(df$dose),
+          intercept = NA_real_,
+          r2 = NA_real_,
+          n_dil_used = 2L
+        )
+      } else {
+        # Three points: linear regression
+        m <- lm(ab_med ~ dose, data = df)
+        tibble(
+          slope = unname(coef(m)["dose"]),
+          intercept = unname(coef(m)["(Intercept)"]),
+          r2 = summary(m)$r.squared,
+          n_dil_used = n_dil
+        )
+      }
+    }),
+    .groups = "drop"
+  ) %>%
+  unnest(fit_result)
+
+write_csv(calib, file.path(out_dir, "dilution_calibration_by_protein.csv")) ###this step takes a long time for some reason
+
+# Plot slopes (expected = 1)
+calib_plot <- calib %>%
+  filter(is.finite(slope))
+
+message("Proteins with valid slopes: ", nrow(calib_plot))
+
+if (nrow(calib_plot) > 0) {
+  p_calib <- calib_plot %>%
+    mutate(featureSubset = order_featureSubset(featureSubset)) %>%
+    ggplot(aes(x = featureSubset, y = slope, fill = featureSubset)) +
+    geom_violin(scale = "width", trim = FALSE, alpha = 0.7) +
+    geom_boxplot(width = 0.15, outlier.size = 0.5) +
+    geom_hline(yintercept = 1, linetype = "dashed", 
+               color = "red", linewidth = 1) +
+    facet_wrap(~ method) +
+    scale_fill_brewer(palette = "Pastel2") +
+    labs(title = "Dilution Calibration: Slope of LogIntensities ~ log₂(1/dilution)",
+         subtitle = "Expected slope = 1 (dashed red line)",
+         y = "Slope", x = "featureSubset") +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  ggsave(file.path(out_dir, "calibration_slopes_by_featureSubset.png"),
+         p_calib, width = 10, height = 6, dpi = 300)
+  
+  # Summary statistics
+  calib_summary <- calib %>%
+    filter(is.finite(slope)) %>%
+    group_by(featureSubset, method) %>%
+    summarize(
+      n_proteins = n(),
+      median_slope = median(slope, na.rm = TRUE),
+      median_r2 = median(r2, na.rm = TRUE),
+      frac_slope_near_1 = mean(slope >= 0.8 & slope <= 1.2, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  write_csv(calib_summary, file.path(out_dir, "calibration_summary.csv"))
+  
+  message("Calibration complete. Median slopes by method:")
+  print(calib_summary)
+} else {
+  message("WARNING: No valid calibration slopes calculated.")
+}
+
+#================================================#
+# 5) False Positive Proxies (1X vs 10X)         #
+#================================================#
+
+# 5a) Feature-level: transitions present at 10X but not 1X
+lib_1x <- feat %>%
+  filter(dilution_x == 1, is.finite(int_use)) %>%
+  distinct(featureSubset, method, protein, peptide, feature_id) %>%
+  mutate(in_lib_1x = TRUE)
+
+feat_10x <- feat %>%
+  filter(dilution_x == 10, is.finite(int_use)) %>%
+  distinct(featureSubset, method, protein, peptide, feature_id)
+
+fp_features <- feat_10x %>%
+  left_join(lib_1x, by = c("featureSubset", "method", "protein", "peptide", "feature_id")) %>%
+  mutate(novel_in_10x = is.na(in_lib_1x)) %>%
+  group_by(featureSubset, method) %>%
+  summarize(
+    total_10x_features = n(),
+    novel_10x_features = sum(novel_in_10x),
+    novel_rate = novel_10x_features / total_10x_features,
+    .groups = "drop"
+  )
+
+write_csv(fp_features, file.path(out_dir, "false_positive_proxy_features.csv"))
+
+p_fp_feat <- fp_features %>%
+  mutate(featureSubset = order_featureSubset(featureSubset)) %>%
+  ggplot(aes(x = featureSubset, y = novel_rate * 100, fill = featureSubset)) +
+  geom_col() + 
+  facet_wrap(~ method) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(title = "10X Features Absent from 1X Library",
+       subtitle = "Potential false positives from imputation or noise",
+       y = "% of 10X features not seen at 1X", 
+       x = "featureSubset") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(out_dir, "fp_proxy_features_bar.png"), 
+       p_fp_feat, width = 10, height = 6, dpi = 300)
+
+# 5b) Proteins present at 10X but absent at 1X
+prot_1x <- prot %>% 
+  filter(dilution_x == 1, is.finite(logintensities)) %>% 
+  distinct(featureSubset, method, protein) %>% 
+  mutate(in_1x = TRUE)
+
+prot_10x <- prot %>% 
+  filter(dilution_x == 10, is.finite(logintensities)) %>% 
+  distinct(featureSubset, method, protein)
+
+fp_prot <- prot_10x %>%
+  left_join(prot_1x, by = c("featureSubset", "method", "protein")) %>%
+  group_by(featureSubset, method) %>%
+  summarize(
+    n_10x = n(),
+    n_10x_only = sum(is.na(in_1x)),
+    rate_10x_only = n_10x_only / n_10x,
+    .groups = "drop"
+  )
+
+write_csv(fp_prot, file.path(out_dir, "false_positive_proxy_proteins.csv"))
+
+message("False positive analysis complete:")
+message("  - Feature-level: ", nrow(fp_features), " rows")
+message("  - Protein-level: ", nrow(fp_prot), " rows")
+
+# 5c) Non-monotone proteins across dilutions (QC flag)
+traj <- prot %>%
+  filter(dilution_x %in% c(1, 5, 10), is.finite(logintensities)) %>%
+  group_by(featureSubset, method, protein, dilution_x) %>%
+  summarize(med_intensity = median(logintensities, na.rm = TRUE), .groups = "drop") %>%
+  arrange(featureSubset, method, protein, dilution_x) %>%
+  group_by(featureSubset, method, protein) %>%
+  summarize(
+    n_dilutions = n(),
+    is_monotone = if_else(n_dilutions >= 2, 
+                          all(diff(med_intensity) <= 0), 
+                          NA),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(is_monotone))
+
+nonmono <- traj %>% 
+  group_by(featureSubset, method) %>%
+  summarize(
+    n_proteins = n(),
+    n_non_monotone = sum(!is_monotone),
+    frac_non_monotone = n_non_monotone / n_proteins,
+    .groups = "drop"
+  )
+
+write_csv(nonmono, file.path(out_dir, "nonmonotone_proteins_fraction.csv"))
+
+#================================================#
+# 6) Cross-Method Discordant Transitions (10X)  #
+#================================================#
+
+# Get 10X data with aggregation (median per feature per method)
+wide_10 <- feat %>% 
+  filter(dilution_x == 10, method == "wide", is.finite(int_use)) %>%
+  group_by(featureSubset, protein, peptide, feature_id) %>%
+  summarize(int_wide = median(int_use, na.rm = TRUE), .groups = "drop")
+
+narr_10 <- feat %>% 
+  filter(dilution_x == 10, method == "narrow", is.finite(int_use)) %>%
+  group_by(featureSubset, protein, peptide, feature_id) %>%
+  summarize(int_narrow = median(int_use, na.rm = TRUE), .groups = "drop")
+
+# Find common transitions between methods (now 1:1 join)
+disc <- inner_join(narr_10, wide_10,
+                   by = c("featureSubset", "protein", "peptide", "feature_id")) %>%
+  group_by(featureSubset, protein, peptide) %>%
+  mutate(
+    pep_med_narrow = median(int_narrow, na.rm = TRUE),
+    pep_med_wide = median(int_wide, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    delta_trans = int_wide - int_narrow,          # Per-transition difference
+    delta_pep = pep_med_wide - pep_med_narrow,    # Peptide-level shift
+    disc_score = delta_trans - delta_pep           # Deviation from peptide consensus
+  )
+
+message("Discordance analysis: ", nrow(disc), " common transitions at 10X")
+
+# Summary statistics
+disc_sum <- disc %>%
+  group_by(featureSubset) %>%
+  summarize(
+    n_transitions = n(),
+    median_abs_disc = median(abs(disc_score), na.rm = TRUE),
+    p95_abs_disc = quantile(abs(disc_score), 0.95, na.rm = TRUE),
+    p99_abs_disc = quantile(abs(disc_score), 0.99, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write_csv(disc_sum, file.path(out_dir, "discordance_summary_10x_wide_vs_narrow.csv"))
+
+# Top discordant transitions (potential quantification issues)
+top_disc <- disc %>%
+  arrange(desc(abs(disc_score))) %>%
+  group_by(featureSubset) %>% 
+  slice_head(n = 50) %>% 
+  ungroup()
+
+write_csv(top_disc, file.path(out_dir, "top50_discordant_transitions_10x.csv"))
+
+# Violin plot of discordance
+p_disc <- disc %>%
+  mutate(featureSubset = order_featureSubset(featureSubset)) %>%
+  ggplot(aes(x = featureSubset, y = abs(disc_score), fill = featureSubset)) +
+  geom_violin(scale = "width", trim = TRUE, color = "grey30", alpha = 0.7) +
+  geom_boxplot(width = 0.15, outlier.size = 0.5) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Transition Discordance: 10X Wide vs Narrow",
+       subtitle = "Deviation of each transition from peptide-level method shift",
+       y = "|Δ transition − Δ peptide median| (log₂)", 
+       x = "featureSubset") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(out_dir, "discordant_transitions_10x.png"), 
+       p_disc, width = 10, height = 6, dpi = 300)
+
+#================================================#
+# 7) Bland-Altman: Method Agreement at 10X       #
+#================================================#
+
+prot_10_w <- prot %>% 
+  filter(dilution_x == 10, method == "wide", is.finite(logintensities)) %>% 
+  select(featureSubset, protein, ab_w = logintensities)
+
+prot_10_n <- prot %>% 
+  filter(dilution_x == 10, method == "narrow", is.finite(logintensities)) %>% 
+  select(featureSubset, protein, ab_n = logintensities)
+
+ba <- inner_join(prot_10_n, prot_10_w, by = c("featureSubset", "protein")) %>%
+  mutate(
+    mean_ab = (ab_n + ab_w) / 2,
+    diff_ab = ab_w - ab_n
+  )
+
+message("Bland-Altman: ", nrow(ba), " proteins quantified in both methods at 10X")
+
+# Summary statistics for limits of agreement
+ba_stats <- ba %>%
+  group_by(featureSubset) %>%
+  summarize(
+    n_proteins = n(),
+    mean_diff = mean(diff_ab, na.rm = TRUE),
+    sd_diff = sd(diff_ab, na.rm = TRUE),
+    loa_lower = mean_diff - 1.96 * sd_diff,
+    loa_upper = mean_diff + 1.96 * sd_diff,
+    .groups = "drop"
+  )
+
+write_csv(ba_stats, file.path(out_dir, "bland_altman_stats_10x.csv"))
+
+p_ba <- ba %>%
+  mutate(featureSubset = order_featureSubset(featureSubset)) %>%
+  ggplot(aes(x = mean_ab, y = diff_ab, color = featureSubset)) +
+  geom_point(alpha = 0.4, size = 1.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 0.8) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
+  facet_wrap(~ featureSubset, scales = "free_x", ncol = 2) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(title = "Bland-Altman Plot: 10X Wide vs Narrow",
+       subtitle = "Protein-level LogIntensities",
+       x = "Mean LogIntensities (log₂)", 
+       y = "Wide − Narrow (log₂)") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none")
+
+ggsave(file.path(out_dir, "bland_altman_10x.png"), 
+       p_ba, width = 12, height = 9, dpi = 300)
+
+#================================================#
+# 8) Final Summary: Fold-Change Error            #
+#================================================#
+
+# Use cmp_clean (finite values only) for consistency
+fc_summary_final <- cmp_clean %>%
+  group_by(featureSubset, label, method) %>%
+  summarize(
+    n = n(),
+    median_error = median(fc_error, na.rm = TRUE),
+    median_abs_error = median(abs(fc_error), na.rm = TRUE),
+    q95_abs_error = quantile(abs(fc_error), 0.95, na.rm = TRUE),
+    rmse = sqrt(mean(fc_error^2, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+write_csv(fc_summary_final, file.path(out_dir, "fc_error_final_summary.csv"))
+
+# Summary table by featureSubset (collapsed across labels)
+fc_summary_by_subset <- cmp_clean %>%
+  group_by(featureSubset) %>%
+  summarize(
+    n_comparisons = n(),
+    n_proteins = n_distinct(protein),
+    median_abs_error = median(abs(fc_error), na.rm = TRUE),
+    q95_abs_error = quantile(abs(fc_error), 0.95, na.rm = TRUE),
+    rmse = sqrt(mean(fc_error^2, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  arrange(median_abs_error)
+
+write_csv(fc_summary_by_subset, file.path(out_dir, "fc_error_by_subset_overall.csv"))
+```
+
+
+```{r}
+#================================================#
+# 9) Intra-Method Discordance via Dilution Response #
+#================================================#
+# Calculate expected vs observed fold-changes for each transition
+trans_dil <- feat %>%
+  filter(dilution_x %in% c(1, 5, 10), is.finite(int_use)) %>%
+  group_by(featureSubset, method, protein, peptide, feature_id, dilution_x) %>%
+  summarize(trans_intensity = median(int_use, na.rm = TRUE), .groups = "drop") %>%
+  arrange(featureSubset, method, protein, peptide, feature_id, dilution_x)
+
+# Pivot to wide format for easier fold-change calculation
+trans_wide <- trans_dil %>%
+  pivot_wider(
+    id_cols = c(featureSubset, method, protein, peptide, feature_id),
+    names_from = dilution_x,
+    values_from = trans_intensity,
+    names_prefix = "int_"
+  ) %>%
+  # Only keep transitions with ALL three dilutions
+  filter(is.finite(int_1) & is.finite(int_5) & is.finite(int_10))
+
+message("Transitions with complete dilution series: ", nrow(trans_wide))
+
+# Calculate fold-changes
+trans_fc <- trans_wide %>%
+  mutate(
+    # Observed fold-changes (log-scale subtraction = ratio)
+    fc_5v1_obs = int_1 - int_5,      # 1X / 5X
+    fc_10v5_obs = int_5 - int_10,    # 5X / 10X
+    fc_10v1_obs = int_1 - int_10,    # 1X / 10X
+    
+    # Expected fold-changes
+    fc_5v1_exp = log2(5),   # 2.322
+    fc_10v5_exp = log2(2),  # 1.000
+    fc_10v1_exp = log2(10), # 3.322
+    
+    # Errors (deviation from expected dilution response)
+    error_5v1 = fc_5v1_obs - fc_5v1_exp,
+    error_10v5 = fc_10v5_obs - fc_10v5_exp,
+    error_10v1 = fc_10v1_obs - fc_10v1_exp
+  )
+
+# Calculate peptide-level errors (consensus across all transitions)
+pep_fc <- trans_fc %>%
+  group_by(featureSubset, method, protein, peptide) %>%
+  summarize(
+    n_transitions = n(),
+    pep_error_5v1 = median(error_5v1, na.rm = TRUE),
+    pep_error_10v5 = median(error_10v5, na.rm = TRUE),
+    pep_error_10v1 = median(error_10v1, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # Only keep peptides with multiple transitions (need siblings for comparison)
+  filter(n_transitions >= 2)
+
+# Join back and calculate intra-method discordance
+trans_discord <- trans_fc %>%
+  inner_join(pep_fc, by = c("featureSubset", "method", "protein", "peptide")) %>%
+  mutate(
+    # Discordance = how much this transition deviates from peptide consensus
+    discord_5v1 = error_5v1 - pep_error_5v1,
+    discord_10v5 = error_10v5 - pep_error_10v5,
+    discord_10v1 = error_10v1 - pep_error_10v1,
+    
+    # Flag problematic transitions
+    is_discord_10x = abs(discord_10v1) > 1.0  # >2-fold deviation
+  )
+
+write_csv(trans_discord, file.path(out_dir, "intra_method_transition_discordance.csv"))
+
+message("Intra-method discordance calculated for ", nrow(trans_discord), " transitions")
+
+# Summary: how many transitions are discordant at 10X?
+discord_summary <- trans_discord %>%
+  group_by(featureSubset, method) %>%
+  summarize(
+    n_transitions = n(),
+    n_peptides = n_distinct(paste(protein, peptide)),
+    n_discord_10x = sum(is_discord_10x, na.rm = TRUE),
+    rate_discord_10x = n_discord_10x / n_transitions,
+    median_abs_discord_5v1 = median(abs(discord_5v1), na.rm = TRUE),
+    median_abs_discord_10v1 = median(abs(discord_10v1), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write_csv(discord_summary, file.path(out_dir, "intra_method_discordance_summary.csv"))
+
+message("\nIntra-method discordance summary:")
+print(discord_summary)
+
+# Top 50 most discordant transitions at 10X
+top_discord_intra <- trans_discord %>%
+  arrange(desc(abs(discord_10v1))) %>%
+  group_by(featureSubset, method) %>%
+  slice_head(n = 50) %>%
+  ungroup()
+
+write_csv(top_discord_intra, file.path(out_dir, "top50_intra_method_discordant_transitions.csv"))
+
+# Prepare data for plotting with max values
+plot_data <- trans_discord %>%
+  select(featureSubset, method, protein, peptide, feature_id, 
+         discord_5v1, discord_10v1) %>%
+  pivot_longer(cols = c(discord_5v1, discord_10v1),
+               names_to = "comparison", values_to = "discord_score") %>%
+  mutate(
+    featureSubset = order_featureSubset(featureSubset),
+    comparison = factor(comparison, 
+                       levels = c("discord_5v1", "discord_10v1"),
+                       labels = c("1X→5X", "1X→10X"))  # Simplified labels
+  )
+
+# Calculate max values for annotation
+max_vals <- plot_data %>%
+  group_by(method, featureSubset, comparison) %>%
+  summarize(max_val = max(abs(discord_score), na.rm = TRUE), 
+            .groups = "drop")
+
+# Loop through each method and create separate plots
+methods <- c("narrow", "wide")
+
+for (mth in methods) {
+  
+  # Filter data for this method
+  plot_data_method <- plot_data %>%
+    filter(method == mth)
+  
+  max_vals_method <- max_vals %>%
+    filter(method == mth)
+  
+  # Create plot
+  p_intra <- ggplot(plot_data_method, 
+                    aes(x = featureSubset, y = abs(discord_score), fill = comparison)) +
+    geom_violin(scale = "width", position = "dodge", alpha = 0.7) +
+    geom_boxplot(width = 0.1, position = position_dodge(0.9), 
+                 outlier.shape = NA, alpha = 0.8) +
+    
+    # Add max value labels at top of plot
+    geom_text(data = max_vals_method,
+              aes(x = featureSubset, y = 2.4, 
+                  label = sprintf("%.1f", max_val),
+                  group = comparison),
+              position = position_dodge(0.9),
+              size = 3, vjust = 1, color = "gray30") +
+    
+    # Zoom to interesting range
+    coord_cartesian(ylim = c(0, 2.5)) +
+    
+    scale_fill_brewer(palette = "Pastel1") +
+    labs(title = sprintf("Intra-Method Transition Discordance: %s windows", 
+                        toupper(mth)),
+         y = "|Discordance| (log₂)", 
+         x = "featureSubset",
+         fill = "Comparison",
+         caption = "Numbers above violins show maximum values") +
+    theme_bw(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "top",
+          plot.caption = element_text(hjust = 0.5, size = 9, color = "gray50"))
+  
+  # Save individual plot
+  ggsave(file.path(out_dir, sprintf("intra_method_discordance_%s.png", mth)),
+         p_intra, width = 10, height = 6, dpi = 300)
+  
+  message("Saved plot for ", mth, " method")
+}
+
+# Also create a combined plot (optional, for comparison)
+p_intra_combined <- plot_data %>%
+  ggplot(aes(x = featureSubset, y = abs(discord_score), fill = comparison)) +
+  geom_violin(scale = "width", position = "dodge", alpha = 0.7) +
+  geom_boxplot(width = 0.1, position = position_dodge(0.9), 
+               outlier.shape = NA, alpha = 0.8) +
+  
+  # Add max value labels
+#  geom_text(data = max_vals,
+#            aes(x = featureSubset, y = 2.4, 
+#                label = sprintf("%.1f", max_val),
+#                group = comparison),
+#            nudge_x = -0.12,  # Shift left
+#            size = 2.5, vjust = 1, color = "gray30") +
+  
+  coord_cartesian(ylim = c(0, 2.5)) +
+  facet_wrap(~ method) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(title = "Intra-Method Transition Discordance Across Dilutions",
+       y = "|Discordance| (log₂)", 
+       x = "featureSubset",
+       fill = "Comparison",
+       caption = "Numbers above violins show maximum values") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "top",
+        plot.caption = element_text(hjust = 0.5, size = 9, color = "gray50"))
+
+ggsave(file.path(out_dir, "intra_method_discordance_combined.png"),
+       p_intra_combined, width = 14, height = 6, dpi = 300)
+```
+

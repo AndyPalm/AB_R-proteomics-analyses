@@ -1,0 +1,284 @@
+---
+title: "AP2-133_136_150_correlation-plot"
+output: html_document
+date: "2023-07-18"
+---
+
+```{r}
+library(pbapply)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(tidyverse)
+setwd("~/R_data/AP2-150_HepG2-wt-SRBI_expression/")
+data <- read.csv("AP2-133vs136_150-no-norm_merge_20june25.csv")
+```
+
+```{r}
+# remove rows with missing values in the relevant columns
+data_clean <- data[!is.na(data$foldchange.wt.vs.SRBI_expression) & 
+                   !is.na(data$foldchange.HDL.chol.JF570.wt.vs.SRBI),]
+
+labels_data <- read.csv("~/R_data/Protein_lists/primary-heps_HDL-chol-JF570-enriched_p05_fc3.csv", header = FALSE)
+labels_of_interest <- as.vector(labels_data$V1)
+```
+#other labels: "HMGCR","MVD","HMGCS1","MVK","FDFT1","CLU","INSR","GPRC5C","NPC2","BSG","LDLR","ACADVL","OSBP","PIGT","PLEKHA3","INPP5K","TMED7","TMEM30A","EGFR","PPT1","CNPY2","CNPY3","CNPY4","PLXNB2","LRPAP1","ADAM10","CP","PROCR","HMGCR","MVD","HMGCS1","MVK","FDFT1"
+
+```{r}
+#making GraphID column
+data_clean2 <- data_clean %>%
+  mutate(
+    Graph_id = case_when(
+      (diffexpressed.HDL.chol.JF570.wt.vs.SRBI == "UP" & diffexpressed.wt.vs.SRBI_expression == "UP") ~ 1,
+      (diffexpressed.HDL.chol.JF570.wt.vs.SRBI == "DOWN" & diffexpressed.wt.vs.SRBI_expression == "DOWN") ~ 2,
+      (diffexpressed.HDL.chol.JF570.wt.vs.SRBI == "UP" & (diffexpressed.wt.vs.SRBI_expression == "NO" | diffexpressed.wt.vs.SRBI_expression == "DOWN")) ~ 3,
+      (diffexpressed.HDL.chol.JF570.wt.vs.SRBI == "DOWN" & (diffexpressed.wt.vs.SRBI_expression == "NO" | diffexpressed.wt.vs.SRBI_expression == "UP")) ~ 4,
+      (!is.na(diffexpressed.HDL.chol.JF570.wt.vs.SRBI)) ~ 5,
+      TRUE ~ NA_real_
+    )
+  )
+
+data_to_plot2 <- data_clean2 %>%
+  filter(!is.na(Graph_id))
+```
+
+
+```{r}
+# Correlation plot_graphID column required
+
+#text options for axes labels
+font_color <- "black"  
+font_face <- "plain"   # "plain", "bold", "italic", "bold.italic"
+
+p <- ggplot(data_to_plot2, aes(x=foldchange.wt.vs.SRBI_expression, y=foldchange.HDL.chol.JF570.wt.vs.SRBI,
+                            color = as.factor(Graph_id), alpha = as.factor(Graph_id),
+                            size = as.factor(Graph_id))) +
+  geom_point() +
+  scale_color_manual(values = c("1" = "#bd4a7f", "2" = "#67a5c7", "3" = "#bd4a7f", "4" = "#67a5c7", "5" = "light grey")) +
+  scale_alpha_manual(values = c("1" = 1, "2" = 1, "3" = 1, "4" = 1, "5" = 0.2)) +
+  scale_size_manual(values = c("1" = 1.5, "2" = 1.5, "3" = 1.5, "4" = 1.5, "5" = 1)) +
+  #geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  #geom_text(data = subset(data_to_plot2, label %in% labels_of_interest), 
+            #aes(label=label), hjust = -0.2, vjust = -0.2, size = 4.5, color = "black") +
+  geom_segment(data = subset(data_to_plot2, label %in% labels_of_interest),
+               aes(xend=foldchange.wt.vs.SRBI_expression, yend=foldchange.HDL.chol.JF570.wt.vs.SRBI), 
+               linetype = "dotted") +
+  geom_hline(yintercept = c(-1, 1), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  scale_x_continuous(limits = c(-7, 7), breaks = seq(-7, 7, 2)) +
+  scale_y_continuous(limits = c(-7, 7), breaks = seq(-7, 7, 2)) +
+  #xlim(c(-7, 7)) +
+  #ylim(c(-7, 7)) +
+  xlab('') +  # Replace with your desired x-axis label
+  ylab('') +  # Replace with your desired y-axis label
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 16, color = "black", family = "Arial"),
+        axis.text.y = element_text(size = 16, color = "black", family = "Arial")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(color = font_color, face = font_face),
+        axis.title.y = element_text(color = font_color, face = font_face),
+        panel.border = element_rect(colour = "black", fill=NA, size=1)) # Add border around plot
+
+p <- p + geom_point(
+  data = subset(data_to_plot2, label %in% labels_of_interest),
+  aes(x=foldchange.wt.vs.SRBI_expression, y=foldchange.HDL.chol.JF570.wt.vs.SRBI),
+  color = "black",
+  size = 1.9,
+  stroke = 1.0,
+  shape = 1
+)
+p
+```
+```{r}
+write.csv(data_to_plot2, file = "AP2-136vs133_150_labeling_vs_expression_20june25.csv", row.names = FALSE)
+```
+
+```{r}
+ggsave("AP2-133_136_150_correlation_20july25_all-primary-circled.png", plot = , width = 8, height = 5, dpi=1200)
+```
+
+Plotting values that were filtered out due to missing labeling/expression foldchange
+```{r}
+# Extract the filtered data points
+# Points with NA in foldchange.wt.vs.SRBI_expression but have foldchange.HDL.chol.JF570.wt.vs.SRBI
+filtered_data_1 <- data[is.na(data$foldchange.wt.vs.SRBI_expression) & 
+                        !is.na(data$foldchange.HDL.chol.JF570.wt.vs.SRBI),]
+
+# Points with NA in foldchange.HDL.chol.JF570.wt.vs.SRBI but have foldchange.wt.vs.SRBI_expression  
+filtered_data_2 <- data[is.na(data$foldchange.HDL.chol.JF570.wt.vs.SRBI) & 
+                        !is.na(data$foldchange.wt.vs.SRBI_expression),]
+
+# Plot 1: HDL.chol.JF570 fold changes (y-axis from main plot)
+# Color based on diffexpressed.HDL.chol.JF570.wt.vs.SRBI
+p1 <- ggplot(filtered_data_1, aes(x = 0, y = foldchange.HDL.chol.JF570.wt.vs.SRBI)) +
+  geom_point(aes(color = diffexpressed.HDL.chol.JF570.wt.vs.SRBI,
+                 alpha = diffexpressed.HDL.chol.JF570.wt.vs.SRBI,
+                 size = diffexpressed.HDL.chol.JF570.wt.vs.SRBI),
+             position = position_jitter(width = 0.2)) +
+  scale_color_manual(values = c("UP" = "#bd4a7f", "DOWN" = "#67a5c7", "NO" = "light grey")) +
+  scale_alpha_manual(values = c("UP" = 1, "DOWN" = 1, "NO" = 0.2)) +
+  scale_size_manual(values = c("UP" = 1.5, "DOWN" = 1.5, "NO" = 1)) +
+  geom_hline(yintercept = c(-1, 1), linetype = "dashed") +
+  scale_y_continuous(limits = c(-7, 7), breaks = seq(-7, 7, 2)) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  ylab('HDL.chol.JF570 fold change') +
+  xlab('') +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size = 16, color = "black", family = "Arial"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        legend.position = "none")
+
+# Add highlighting for labels of interest
+p1 <- p1 + geom_point(
+  data = subset(filtered_data_1, label %in% labels_of_interest),
+  aes(x = 0, y = foldchange.HDL.chol.JF570.wt.vs.SRBI),
+  color = "black",
+  size = 1.9,
+  stroke = 1.0,
+  shape = 1,
+  position = position_jitter(width = 0.2)
+)
+
+# Plot 2: Expression fold changes (x-axis from main plot) - customizable
+# You can modify these color/size/alpha values
+custom_colors <- c("UP" = "#bd4a7f", "DOWN" = "#67a5c7", "NO" = "light grey")
+custom_alphas <- c("UP" = 1, "DOWN" = 1, "NO" = 0.2)
+custom_sizes <- c("UP" = 1.5, "DOWN" = 1.5, "NO" = 1)
+
+p2 <- ggplot(filtered_data_2, aes(x = foldchange.wt.vs.SRBI_expression, y = 0)) +
+  geom_point(aes(color = diffexpressed.wt.vs.SRBI_expression,
+                 alpha = diffexpressed.wt.vs.SRBI_expression,
+                 size = diffexpressed.wt.vs.SRBI_expression),
+             position = position_jitter(height = 0.2)) +
+  scale_color_manual(values = custom_colors) +
+  scale_alpha_manual(values = custom_alphas) +
+  scale_size_manual(values = custom_sizes) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  scale_x_continuous(limits = c(-7, 7), breaks = seq(-7, 7, 2)) +
+  scale_y_continuous(limits = c(-0.5, 0.5)) +
+  xlab('Expression fold change') +
+  ylab('') +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_text(size = 16, color = "black", family = "Arial"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        legend.position = "none")
+
+# Add highlighting for labels of interest
+p2 <- p2 + geom_point(
+  data = subset(filtered_data_2, label %in% labels_of_interest),
+  aes(x = foldchange.wt.vs.SRBI_expression, y = 0),
+  color = "black",
+  size = 1.9,
+  stroke = 1.0,
+  shape = 1,
+  position = position_jitter(height = 0.2)
+)
+
+# Display the plots
+print(p1)
+print(p2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Generate the correlation plot
+p <- ggplot(data_to_plot, aes(x=foldchange.chol.POCA.labeling, y=foldchange.chol.POCA.competition,
+                              color = as.factor(Graph_id), alpha = as.factor(Graph_id),
+                              size = as.factor(Graph_id))) +
+  geom_point() +
+  scale_color_manual(values = c("1" = "black", "2" = "#fc03e8", "3" = "#3467eb", "4" = "light grey")) +
+  scale_alpha_manual(values = c("1" = 0.9, "2" = 1, "3" = 1, "4" = 0.5)) +
+  scale_size_manual(values = c("1" = 1.5, "2" = 1.5, "3" = 1.5, "4" = 1)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_vline(xintercept = 0, color = "black") +
+  xlab('') +
+  ylab('') +
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black", size = 0.75)) + 
+  scale_x_continuous(limits = c(1, 5), breaks = seq(1, 5, 1)) +
+  scale_y_continuous(limits = c(1, 5), breaks = seq(1, 5, 1))
+
+p
+
+```{r}
+data_clean$color_bin <- cut(data_clean$foldchange.HDL.chol.JF570.wt.vs.SRBI, 
+                            breaks=c(-Inf, -1, 1, Inf), 
+                            labels=c("#67a5c7", "grey", "#bd4a7f"))
+# generate the correlation plot
+font_color <- "black"  # Replace with your desired color
+font_face <- "plain"   # Options are "plain", "bold", "italic", "bold.italic"
+
+p <- ggplot(data_clean, aes(x=foldchange.wt.vs.SRBI_expression, y=foldchange.HDL.chol.JF570.wt.vs.SRBI)) +
+  geom_point(aes(color=color_bin)) +
+  scale_color_identity() +
+  #geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  geom_text(data = subset(data_clean, label %in% labels_of_interest), 
+            aes(label=label), hjust = -0.2, vjust = -0.2, size = 4.5) +
+  geom_segment(data = subset(data_clean, label %in% labels_of_interest),
+               aes(xend=foldchange.wt.vs.SRBI_expression, yend=foldchange.HDL.chol.JF570.wt.vs.SRBI), 
+               linetype = "dotted") +
+  geom_hline(yintercept = c(-1, 1), linetype = "dashed") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  xlim(c(-6, 6)) +
+  ylim(c(-6, 6)) +
+  xlab('') +  # Replace with your desired x-axis label
+  ylab('') +  # Replace with your desired y-axis label
+  theme_minimal() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(color = font_color, face = font_face),
+        axis.title.y = element_text(color = font_color, face = font_face),
+        panel.border = element_rect(colour = "black", fill=NA, size=1)) # Add border around plot
+
+p
+
+```
+
+```{r}
+# get rows with missing foldchange.wt.vs.SRBI_expression
+data_na1 <- data[is.na(data$foldchange.wt.vs.SRBI_expression),]
+
+# plot histogram
+ggplot(data_na1, aes(x=foldchange.HDL.chol.JF570.wt.vs.SRBI)) +
+  geom_histogram() +
+  xlab('foldchange.HDL.chol.JF570.wt.vs.SRBI with missing foldchange.wt.vs.SRBI_expression') +
+  theme_minimal()
+
+# get rows with missing foldchange.HDL.chol.JF570.wt.vs.SRBI
+data_na2 <- data[is.na(data$foldchange.HDL.chol.JF570.wt.vs.SRBI),]
+
+# plot histogram
+ggplot(data_na2, aes(x=foldchange.wt.vs.SRBI_expression)) +
+  geom_histogram() +
+  xlab('foldchange.wt.vs.SRBI_expression with missing foldchange.HDL.chol.JF570.wt.vs.SRBI') +
+  theme_minimal()
+
+```
+

@@ -1,0 +1,205 @@
+---
+title: "Volcano_plots_FP"
+output: html_document
+---
+Aggregate the data; takes several minutes
+```{r setup, include=FALSE}
+library(pbapply)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(tidyverse)
+library(dplyr)
+```
+
+#Transforming data from MSstats output ("comparison results") into different dataframes for the different comparisons used
+```{r}
+setwd("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/AP2-339B_reruns_MSstats_top4_impute")
+
+data <- read.csv("339B_reruns-top4-features_comparison-results_imputed.csv")
+
+unique_labels <- unique(data$Label)
+
+# Create a list to store all dataframes
+label_dataframes <- list()
+
+# For each unique label, create a separate dataframe
+for(label in unique_labels) {
+  # Filter data for current label
+  subset_data <- data %>%
+    filter(Label == label) %>%
+    # Select and rename columns as needed
+    select(
+      ProteinID = Protein,
+      Label,
+      FC = log2FC,
+      p_value = pvalue,
+      adj.pvalue = adj.pvalue,
+      SE,
+      Tvalue = Tvalue,
+      DF
+    ) %>%
+    # Handle infinite values in FC
+    mutate(
+      FC = case_when(
+        FC == Inf ~ 10,
+        FC == -Inf ~ -10,
+        TRUE ~ FC
+      ),
+      # Add empty columns to match desired format
+      diffexpressed = NA,
+      selected_labels = NA
+    )
+  
+  # Store the dataframe in the list with the label as the name
+  label_dataframes[[label]] <- subset_data
+}
+```
+
+Save each dataframe to a separate CSV file
+```{r}
+for(label in unique_labels) {
+  write.csv(label_dataframes[[label]], 
+            file = paste0(label, "_339B_reruns_impute-no-norm_transformed-data_29Nov25.csv"), 
+            row.names = FALSE)
+}
+```
+
+#alternative labeling strategy: provide excel file with one column containing Uniprot accession numbers with the header 'ProteinID' and the label will be populated as the gene from the original dataframe (i.e. it uses the Gene label that already exists in the data). Useful if you don't have custom labels for any of your proteins
+```{r}
+protein_labels <- read_excel("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/339_selected-labels_29nov25.xlsx")
+results <- results %>%
+  mutate(matching_protein = ProteinID %in% protein_labels$ProteinID) %>%
+  mutate(selected_labels = ifelse(matching_protein, Label, selected_labels)) %>%
+  select(-matching_protein)
+```
+
+
+Setting protein subset groups (which proteins you want colored differently on volcano, i.e. all mito proteins, cholesterol-binding proteins, etc.)
+```{r} 
+#labeling nucleoporins
+NUP_list <- read_excel("~/R_data/PM_surface-proteinID.xlsx")
+results[!results$ProteinID%in%NUP_list$`ProteinID`,]$Label<- NA
+results[results$ProteinID%in%NUP_list$`ProteinID`,]$diffexpressed.raw<-paste("NUP",results[results$ProteinID%in%NUP_list$`ProteinID`,]$diffexpressed.raw,sep="_")
+results$diffexpressed.raw<-factor(results$diffexpressed.raw,levels=c("NO","UP","NUP_NO","NUP_UP","NUP_DOWN","DOWN"))
+results$Label <- as.character(results$Label)
+results$Label[which(results$diffexpressed.raw == "NO")] <- NA
+results$Label <- factor(results$Label)
+```
+
+
+Make the volcano plot #ED1C24", "#3549a1", "#165e3a"
+```{r}
+results$selected_labels <- ifelse(
+  abs(results$FC) > 1.5 & results$adj.pvalue < 0.05,
+  results$Label,
+  NA
+)
+volcano = ggplot(data = results, aes(x = FC, y = -1*log10(adj.pvalue)))
+p <- volcano + geom_point(aes(col = diffexpressed.adj), size = 1.0, alpha = 0.8) +
+    scale_color_manual(values = c("#eb6e34", "light grey", "#165e3a", "#165e3a", "#eb6e34", "#eb6e34")) + ###can adjust the colors with hex codes or words. levels=c("NO","UP","CBP_NO","CBP_UP","CBP_DOWN","DOWN")
+    geom_vline(xintercept = c(-1.5, 1.5), col = "black", linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), col = "black", linetype = "dashed") +
+    geom_label_repel(aes(label = selected_labels), segment.color = 'black', force = 10) + #this labels the list you designated above
+    theme_classic(base_size = 20) +
+    labs(title = plot_title, y = "", x = "") +
+    theme(legend.position = "none") +
+    theme(axis.text.x = element_text(size = 16, family = "Arial"),
+        axis.text.y = element_text(size = 16, family = "Arial")) +
+    scale_x_continuous(limits = c(-10, 10), breaks = seq(-10, 10, 2))
+    scale_y_continuous(limits = c(0, 5), breaks = seq(0, 5, 1))
+p
+```
+
+
+```{r}
+p <- p + geom_point(
+  data = subset(results, as.character(selected_labels) %in% levels(factor(selected_labels))),
+  aes(x = FC, y = -1 * log10(p_value)),
+  color = "black",
+  size = 1.4,
+  stroke = 1.0,
+  shape = 1
+)
+
+p
+```
+
+
+```{r}
+ggsave("ALOD4-UF-vs-DF_.png", width = 6, height = 4, dpi=300)
+write.csv(results, file="AP2-296_search5_no-norm_ALOD4-DOWN_OlyA-UP_results.csv",row.names = F)
+```
+
+
+
+Loop attempt
+```{r}
+setwd("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/AP2-339B_reruns_MSstats_top4_impute/transformed_data_for_plotting")
+csv_files <- list.files(pattern = "\\.csv$", full.names = FALSE)
+gene_lookup <- read_excel("~/R_data/uniprot_hs_29may25.xlsx")
+for(filename in csv_files) {
+  
+  # Read the file
+  results <- read.csv(filename, stringsAsFactors = FALSE)
+  
+  # Extract the title (everything before "_339")
+  plot_title <- sub("_339.*", "", basename(filename))
+  
+  # Process the data (your existing code)
+  results <- results %>%
+    rename(diffexpressed.raw = diffexpressed)
+  
+  results$diffexpressed.adj <- NA
+  
+  results$diffexpressed.raw <- ifelse(results$FC > 1.5 & results$p_value < 0.05, "UP",
+                                     ifelse(results$FC < -1.5 & results$p_value < 0.05, "DOWN", "NO"))
+  
+  results$diffexpressed.adj <- ifelse(results$FC > 1.5 & results$adj.pvalue < 0.05, "UP",
+                                     ifelse(results$FC < -1.5 & results$adj.pvalue < 0.05, "DOWN", "NO"))
+  
+  results <- results %>%
+    left_join(gene_lookup, by = c("ProteinID" = "Entry")) %>%
+    mutate(Label = ifelse(!is.na(`Gene Names (primary)`), `Gene Names (primary)`, Label)) %>%
+    select(-`Gene Names (primary)`)
+  
+  # Create selected labels
+  results$selected_labels <- ifelse(
+    abs(results$FC) > 1.5 & results$adj.pvalue < 0.05,
+    results$Label,
+    NA
+  )
+  # modify results frame so selected labels show up
+  results <- results %>%
+  mutate(matching_protein = ProteinID %in% protein_labels$ProteinID) %>%
+  mutate(selected_labels = ifelse(matching_protein, Label, selected_labels)) %>%
+  select(-matching_protein)
+  
+  # Create the volcano plot
+  volcano = ggplot(data = results, aes(x = FC, y = -1*log10(adj.pvalue)))
+  p <- volcano + geom_point(aes(col = diffexpressed.adj), size = 1.0, alpha = 0.8) +
+    scale_color_manual(values = c("#eb6e34", "light grey", "#165e3a", "#165e3a", "#eb6e34", "#eb6e34")) +
+    geom_vline(xintercept = c(-1.5, 1.5), col = "black", linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), col = "black", linetype = "dashed") +
+    geom_label_repel(aes(label = selected_labels), segment.color = 'black', force = 10) +
+    theme_classic(base_size = 20) +
+    labs(title = plot_title, y = "", x = "") +
+    theme(legend.position = "none") +
+    theme(axis.text.x = element_text(size = 16, family = "Arial"),
+          axis.text.y = element_text(size = 16, family = "Arial")) +
+    scale_x_continuous(limits = c(-10, 10), breaks = seq(-10, 10, 2)) +
+    scale_y_continuous(limits = c(0, 5), breaks = seq(0, 5, 1))
+  
+  # Save the plot
+  output_filename <- paste0(plot_title, "_volcano_plot.png")
+  ggsave(output_filename, plot = p, width = 8, height = 6, dpi = 300)
+  
+  # Print progress
+  cat("Processed:", filename, "-> Saved as:", output_filename, "\n")
+}
+```
+

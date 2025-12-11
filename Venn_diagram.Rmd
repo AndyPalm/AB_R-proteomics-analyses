@@ -1,0 +1,228 @@
+---
+title: "Venn Diagram"
+output: html_notebook
+---
+
+```{r}
+library(VennDiagram)
+install.packages("extrafont")
+library(extrafont)
+install.packages("Cairo")
+#font_import()
+```
+Two-sided Venn
+```{r}
+library("VennDiagram")
+
+grid.newpage()  
+two.way.venn <- draw.pairwise.venn(
+  area1 = 1575,
+  area2 = 1227,
+  cross.area = 613,
+  col = c("79380", "800"),
+  fill = c("#fc03e8", "#ED1C24"),
+  fontfamily = "Arial",
+  category.cex = 1,  ##size
+  category.fontface = "regular",  ##style
+  euler.d.fontface = "regular",  ##style for intersection label
+  euler.d.cex = 1.5,  ##size for intersection
+  lty = "blank",
+                 cex = 0.8,       # Adjust the text size (e.g., 1.5 for 50% larger)
+                 cat.cex = 1)   # Adjust the category label text size, if needed)
+png(filename = "chol-vs-palm_JF570_venn_14dec24.png", width = 2000, height = 1400, res = 1400)
+grid.draw(two.way.venn)
+dev.off()
+
+                  
+```
+area1 <- 485
+area2 <- 297
+area3 <- 221
+n12 <- 126
+n13 <- 165
+n23 <- 82
+n123 <- 71
+
+```{r}
+library(VennDiagram)
+
+grid.newpage()
+venn.plot <- draw.triple.venn(area1 = 485,
+                 area2 = 221,
+                 area3 = 484,
+                 n12 = 165,       
+                 n23 = 122,       
+                 n13 = 185,
+                 n123 = 106,
+                 category = c("","",""),
+                 fill = c("#be4a80", "#67a5c6", "black"),
+                 lty = "blank",
+                 cex = 0,       # Adjust the text size (e.g., 1.5 for 50% larger)
+                 cat.cex = 1)   # Adjust the category label text size, if needed)
+png(filename = "3-way-venn_HDL_cholJF570-heps_7Aug24.png", width = 2000, height = 1400, res = 1400)
+grid.draw(venn.plot)
+dev.off()
+
+```
+
+
+Quadrupule venn diagram
+Making the venn diagram. I have already done all the "heavy lifting" in excel using the vlookup function.
+```{r}
+grid.newpage()
+venn.plot <- draw.quad.venn(area1 = 587,      #AP2-123b
+                 area2 = 558,    #LMK38
+                 area3 = 503,    #NBII-165
+                 area4 = 754,    #trans-sterol (PRC)
+                 n12 = 154,       
+                 n23 = 347,       
+                 n13 = 130,
+                 n14 = 236,
+                 n24 = 379,
+                 n34 = 344,
+                 n123 = 100,
+                 n124 = 137,
+                 n234 = 262,
+                 n134 = 122,
+                 n1234 = 93,
+                 category = c("chol-JF570","LKM38","NBII-165","trans-sterol"),
+                 fill = c("#fc03e8", "green", "orange", "blue"),
+                 lty = "blank",
+                 cex = 2,       # Adjust the text size (e.g., 1.5 for 50% larger)
+                 cat.cex = 1)   # Adjust the category label text size, if needed
+grid.draw(venn.plot)
+dev.off()
+```
+
+
+```{r}
+#SWITCHING 2<->4
+grid.newpage()
+venn.plot <- draw.quad.venn(area1 = 1575,      #EB-B-012 chol
+                 area2 = 1443,    #trans-sterol (PRC)
+                 area3 = 452,    #NBII-165
+                 area4 = 408,    #LKM38
+                 n12 = 422,       
+                 n23 = 283,       
+                 n13 = 123,
+                 n14 = 101,
+                 n24 = 243,
+                 n34 = 213,
+                 n123 = 109,
+                 n124 = 90,
+                 n234 = 146,
+                 n134 = 55,
+                 n1234 = 52,
+                 category = c("","","",""),
+                 fill = c("#fc03e8", "dark green", "orange", "blue"),
+                 lty = "blank",
+                 cex = 0.6,       # Adjust the text size (e.g., 1.5 for 50% larger)
+                 cat.cex = 1)   # Adjust the category label text size, if needed
+
+png(filename = "4-way-venn_chol-diaz_JF570_9jan25.png", width = 2000, height = 1400, res = 1400)
+grid.draw(venn.plot)
+dev.off()
+
+```
+
+```{r}
+# Load required libraries
+library(VennDiagram)
+library(Cairo)
+
+# Create a file connection to the EPS file
+output_file <- "venn_diagram.eps"
+Cairo(file = output_file, width = 7, height = 7, type = "eps", units = "in", dpi = 300)
+
+# Draw the Venn diagram with the "Times" font family
+venn.plot <- draw.quad.venn(area1 = 765,
+                 area2 = 754,
+                 area3 = 503,
+                 area4 = 558,
+                 n12 = 273,       
+                 n23 = 379,       
+                 n13 = 142,
+                 n14 = 163,
+                 n24 = 379,
+                 n34 = 347,
+                 n123 = 132,
+                 n124 = 147,
+                 n234 = 262,
+                 n134 = 104,
+                 n1234 = 102,
+                 category = c("chol-JF570","trans-sterol","NBII-165","LKM38"),
+                 fill = c("magenta", "dark green", "orange", "blue"),
+                 lty = "blank",
+                 cat.fontfamily = "Times")  # Change the font family here
+
+
+# Close the file connection
+dev.off()
+
+```
+
+
+
+
+
+
+
+```{r}
+# Writing to file
+tiff(
+    filename = tempfile(
+        pattern = 'Quad_Venn_diagram',
+        fileext = '.tiff'
+        ),
+    compression = "lzw"
+    );
+grid.draw(venn.plot);
+dev.off()
+```
+
+
+
+```{r}
+png(filename = "venn_plot.png", width = 1200, height = 1200, res = 1200)
+grid.draw(venn.plot)
+dev.off()
+
+```
+
+
+
+
+category    A vector (length 4) of strings giving the category names of the sets
+lwd     A vector (length 4) of numbers giving the line width of the circles’ circumferences
+lty     A vector (length 4) giving the dash pattern of the circles’ circumferences
+col     A vector (length 4) giving the colours of the circles’ circumferences
+fill    A vector (length 4) giving the colours of the circles’ areas
+alpha     A vector (length 4) giving the alpha transparency of the circles’ areas
+label.col     A vector (length 15) giving the colours of the areas’ labels
+cex     A vector (length 15) giving the size of the areas’ labels
+fontface    A vector (length 15) giving the fontface of the areas’ labels
+fontfamily    A vector (length 15) giving the fontfamily of the areas’ labels
+cat.pos     A vector (length 4) giving the positions (in degrees) of the category names along
+the circles, with 0 (default) at 12 o’clock
+cat.dist    A vector (length 4) giving the distances (in npc units) of the category names
+from the edges of the circles (can be negative)
+cat.cex     A vector (length 4) giving the size of the category names
+cat.col     A vector (length 4) giving the colours of the category names
+cat.fontface    A vector (length 4) giving the fontface of the category names
+cat.fontfamily    A vector (length 4) giving the fontfamily of the category names
+cat.just    List of 4 vectors of length 2 indicating horizontal and vertical justification of
+each category name
+rotation.degree   Number of degrees to rotate the entire diagram
+rotation.centre   A vector (length 2) indicating (x,y) of the rotation centre
+ind Boolean indicating whether the function is to automatically draw the diagram
+before returning the gList object or not
+cex.prop    A function or string used to rescale areas
+print.mode    Can be either ’raw’ or ’percent’. This is the format that the numbers will be
+printed in. Can pass in a vector with the second element being printed under the
+first
+sigdigs     If one of the elements in print.mode is ’percent’, then this is how many significant digits will be kept
+direct.area     If this is equal to true, then the vector passed into area.vector will be directly
+assigned to the areas of the corresponding regions. Only use this if you know
+which positions in the vector correspond to which regions in the diagram
+area.vector     An argument to be used when direct.area is true. These are the areas of the
+corresponding regions in the Venn Diagram

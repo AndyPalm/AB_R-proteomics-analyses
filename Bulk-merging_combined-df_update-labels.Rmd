@@ -1,0 +1,124 @@
+---
+title: "Merging_POCA_datasets"
+output: html_document
+date: "2023-07-10"
+R version: 4.2.2 (64-bit)
+---
+Load packages
+```{r}
+library(pbapply)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(tidyverse)
+```
+##Note that this was written to run on R 4.2.2##
+
+Readme please :)
+------------------------------------------------
+
+1) Save this R markdown file into a folder that contains your lookup table file (in this case, "uniprot_accession_gene.csv", which is the UniProt reviewed human proteome downloaded ~2022)
+  -The lookup table should have two columns: "ProteinID" (no space between 'n' and 'I') and "label" (this is the gene identifier)
+  -If exporting your lookup table from a UniProt reviewed proteome, I suggest using "Gene Names (primary)" as the "label" since this is a unique character string for each protein.
+  ------> Run "create lookup table" chunk
+  
+2) Place your results files, as .csv files, into the same folder that this R markdown file is saved to.
+
+3) Ensure the results files have these headers exactly: "foldchange"	"p_value"	"ProteinID"	"label"	"diffexpressed"
+  -Note that "label" is the gene name and "ProteinID" is the UniProt accession identifier
+  -----> Run "Read results files" chunk
+  
+4) If you have 100% homo sapiens proteins (99% of cases) ---> Run the "MERGE 1" chunk
+  - There is a code chunk below the "MERGE 2" chunk for exporting your merged data as a .csv
+
+5) If MERGE 1 gives an error, you have at least 1 entry that is not found in the lookup table (e.g. protein entries from a different species, or a protein whose identifier has been updated/deprecated in the UniProt release you are using for your lookup table). Delete your objects from the workspace (the broom in the upper-right hand area of the screen) 
+  ------> Run "MERGE 2" chunk
+  
+  
+Good luck with your submission!
+
+-------------------------------------------------
+
+
+Create lookup table from df.labels. Check column headers.
+```{r}
+setwd("~/R_data/AB_merging_script_troubleshooting_18july25/")
+df.labels <- read.csv("uniprot_accession_gene.csv")
+lookup <- df.labels[, c("ProteinID", "label")]
+```
+
+Read results files (as .csv). Check column headers.
+```{r}
+df1 <- read.csv("EB-B-012-chol-JF570_plusminus-hv_FC1-p05.csv")
+df2 <- read.csv("EB-B-012-palm-JF570_plusminus-hv_FC1-p05.csv")
+```
+
+--------------------
+MERGE 1
+--------------------
+Merge based on "ProteinID" aka Uniprot Accession.
+```{r}
+df_list <- list(mBCD.chol.JF570.HEK.rep1 = df1, mBCD.palm.JF570.HEK = df2) ##adjust these names to those you want displayed as the column headers in the final output.
+
+
+df_list <- lapply(df_list, function(df) {
+  df$label <- NULL # remove existing label
+  df <- merge(df, lookup, by = "ProteinID", all.x = TRUE)
+  return(df)
+})
+
+# Renaming columns
+df_list <- lapply(names(df_list), function(x) {
+  df <- df_list[[x]]
+  names(df)[names(df) %in% c("foldchange", "p_value", "diffexpressed")] <- 
+    paste0(c("foldchange", "p_value", "diffexpressed"), ".", x)
+  return(df)
+})
+
+merged_df <- Reduce(function(x, y) merge(x, y, by = c("ProteinID", "label"), all = TRUE), df_list)
+```
+
+-------------------
+MERGE 2
+-------------------
+The script below keeps the value of 'label' from the original dataframe if a "ProteinID" match in 'lookup_table' is not found (i.e. results have mouse/pig/yeast genes in addition to homo sapiens)
+```{r}
+df_list <- list(mBCD.chol.JF570.HEK.rep1 = df1, mBCD.palm.JF570.HEK = df2) ##adjust these names to those you want displayed as the column headers in the final output.
+df_list <- lapply(df_list, function(df) {
+  # Rename the original label column to original_label
+  names(df)[names(df) == "label"] <- "original_label"
+  
+  # Merge with lookup table
+  df <- merge(df, lookup, by = "ProteinID", all.x = TRUE)
+  
+  # Use original_label if label from lookup is NA
+  df$label <- ifelse(is.na(df$label), df$original_label, df$label)
+  
+  # Remove the original_label column
+  df$original_label <- NULL
+  
+  return(df)
+})
+
+# Renaming columns (unchanged)
+df_list <- lapply(names(df_list), function(x) {
+  df <- df_list[[x]]
+  names(df)[names(df) %in% c("foldchange", "p_value", "diffexpressed")] <- 
+    paste0(c("foldchange", "p_value", "diffexpressed"), ".", x)
+  return(df)
+})
+
+# Final merge (unchanged)
+merged_df <- Reduce(function(x, y) merge(x, y, by = c("ProteinID", "label"), all = TRUE), df_list)
+```
+
+
+
+```{r}
+write.csv(merged_df, file = "Merged_your_title_here.csv", row.names = FALSE)
+```
+

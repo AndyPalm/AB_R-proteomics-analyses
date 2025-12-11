@@ -1,0 +1,468 @@
+---
+title: "Circle_plot_POCA2"
+output: html_document
+date: "2025-10-16"
+---
+##Built in R 4.4.3
+```{r}
+library(pak)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(ggforce)
+library(magrittr)
+library(devtools)
+```
+
+```{r}
+setwd("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-296/circle-plot")
+df <- read.csv(("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-296/MSstats-DIAworkup_11_search8_median-norm_top10-imputed/296-search8_top10-features_protein-level-data_norm_impute.csv"))
+```
+
+
+```{r}
+proteins_to_plot <- c("P00533", "P16070", "P26006", "P05556", "P04004", "P15311","Q969P0", "P30740", "Q13596",  "Q8IV04","P35579", "O75044", "Q14677")
+```
+
+
+```{r}
+library(tidyverse)
+library(ggforce)
+
+# PARAMETERS
+group_colors <- c(
+  "ALOD4" = "#FF6B6B",
+  "Ctx" = "#4ECDC4",
+  "OlyA" = "#45B7D1"
+)
+column_spacing <- 0.08
+
+# Prepare data
+plot_data <- df %>%
+  filter(Protein %in% proteins_to_plot) %>%
+  filter(GROUP != "control") %>%
+  group_by(Protein, GROUP) %>%
+  summarise(
+    mean_intensity = mean(LogIntensities, na.rm = TRUE),
+    n_measured = sum(!is.na(LogIntensities)),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    n_total = 3,
+    proportion_measured = n_measured / 3,
+    angle_measured = proportion_measured * 360,
+    Protein = factor(Protein, levels = proteins_to_plot)
+  ) %>%
+  mutate(
+    x_pos = as.numeric(Protein),
+    y_pos = as.numeric(factor(GROUP))
+  )
+
+min_intensity <- min(plot_data$mean_intensity)
+max_intensity <- max(plot_data$mean_intensity)
+
+# Plot with enhanced visibility
+ggplot(plot_data) +
+  # Background circles
+  geom_arc_bar(
+    aes(x0 = x_pos, 
+        y0 = y_pos,
+        r0 = 0, 
+        # LARGER RANGE + POWER SCALING
+        r = 0.08 + ((mean_intensity - min_intensity) / 
+            (max_intensity - min_intensity))^1.3 * 0.37,
+        start = 0, 
+        end = 2*pi),
+    fill = "grey90",
+    color = "grey60",
+    linewidth = 0.3
+  ) +
+  # Measured portion with GRADIENT
+  geom_arc_bar(
+    aes(x0 = x_pos, 
+        y0 = y_pos,
+        r0 = 0, 
+        r = 0.08 + ((mean_intensity - min_intensity) / 
+            (max_intensity - min_intensity))^1.3 * 0.37,
+        start = 0, 
+        end = angle_measured * pi/180,
+        fill = mean_intensity),  # Color by intensity
+    color = "black",
+    linewidth = 0.4
+  ) +
+  # Add intensity labels
+  geom_text(
+    aes(x = x_pos, y = y_pos, label = round(mean_intensity, 1)),
+    size = 2,
+    fontface = "bold",
+    color = "white"
+  ) +
+  # Scales
+  scale_x_continuous(
+    breaks = 1:length(proteins_to_plot),
+    labels = proteins_to_plot,
+    position = "top",
+    expand = expansion(add = column_spacing)
+  ) +
+  scale_y_continuous(
+    breaks = unique(plot_data$y_pos),
+    labels = levels(factor(plot_data$GROUP)),
+    trans = "reverse"
+  ) +
+  # Gradient fill by GROUP
+  scale_fill_gradientn(
+    colors = c("#FFCCCC", "#FF6B6B", "#CC0000"),  # Light to dark red gradient
+    name = "Mean Intensity",
+    breaks = seq(floor(min_intensity), ceiling(max_intensity), by = 2)
+  ) +
+  scale_size_continuous(
+    name = "Mean Intensity",
+    range = c(2, 8),
+    breaks = seq(floor(min_intensity), ceiling(max_intensity), by = 2)
+  ) +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.position = "right",
+    plot.margin = margin(10, 10, 10, 10)
+  )
+```
+
+
+## cirlces without color scaling and number labels
+```{r}
+library(tidyverse)
+library(ggforce)
+
+# PARAMETERS TO CUSTOMIZE
+# Define colors for each group (change hex codes as needed)
+group_colors <- c(
+  "ALOD4" = "#FF6B6B",  # Red
+  "Ctx" = "#4ECDC4",    # Teal
+  "OlyA" = "#45B7D1"    # Blue
+)
+
+# Column spacing (lower = closer together, try values between 0.05-0.3)
+column_spacing <- 0.08
+
+# Prepare the data - EXCLUDE control and force n_total = 3
+plot_data <- df %>%
+  filter(Protein %in% proteins_to_plot) %>%
+  filter(GROUP != "control") %>%
+  group_by(Protein, GROUP) %>%
+  summarise(
+    mean_intensity = mean(LogIntensities, na.rm = TRUE),
+    n_measured = sum(!is.na(LogIntensities)),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    n_total = 3,
+    proportion_measured = n_measured / 3,
+    angle_measured = proportion_measured * 360,
+    # Order proteins according to proteins_to_plot
+    Protein = factor(Protein, levels = proteins_to_plot)
+  ) %>%
+  # Add positions AFTER factoring
+  mutate(
+    x_pos = as.numeric(Protein),
+    y_pos = as.numeric(factor(GROUP))
+  )
+
+# Calculate min and max for scaling
+min_intensity <- min(plot_data$mean_intensity)
+max_intensity <- max(plot_data$mean_intensity)
+
+# Create the plot
+ggplot(plot_data) +
+  # Full circle background
+  geom_arc_bar(
+    aes(x0 = x_pos, 
+        y0 = y_pos,
+        r0 = 0, 
+        r = 0.15 + (mean_intensity - min_intensity) / 
+            (max_intensity - min_intensity) * 0.25,
+        start = 0, 
+        end = 2*pi),
+    fill = "grey90",
+    color = "grey60",
+    linewidth = 0.3
+  ) +
+  # Measured portion (pac-man style)
+  geom_arc_bar(
+    aes(x0 = x_pos, 
+        y0 = y_pos,
+        r0 = 0, 
+        r = 0.15 + (mean_intensity - min_intensity) / 
+            (max_intensity - min_intensity) * 0.25,
+        start = 0, 
+        end = angle_measured * pi/180,
+        fill = GROUP),
+    color = "black",
+    linewidth = 0.3
+  ) +
+  # Add invisible points for size legend
+  geom_point(
+    aes(x = x_pos, y = y_pos, size = mean_intensity),
+    alpha = 0
+  ) +
+  # Scales
+  scale_x_continuous(
+    breaks = 1:length(proteins_to_plot),  # Use sequential numbers
+    labels = proteins_to_plot,  # Use the original vector directly
+    position = "top",
+    expand = expansion(add = column_spacing)
+  ) +
+  scale_y_continuous(
+    breaks = unique(plot_data$y_pos),
+    labels = levels(factor(plot_data$GROUP)),
+    trans = "reverse"
+  ) +
+  scale_fill_manual(values = group_colors) +
+  scale_size_continuous(
+    name = "Mean Intensity",
+    range = c(2, 8),
+    breaks = c(13, 20, 28),
+    labels = c("13", "20", "28")
+  ) +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.position = "right",
+    plot.margin = margin(10, 10, 10, 10)
+  ) +
+  guides(
+    fill = "none",
+    size = guide_legend(
+      title = "Mean Intensity",
+      override.aes = list(alpha = 1, shape = 16)
+    )
+  )
+```
+
+Plotting log2 foldchange instead (difference of log2-transformed intensities)
+```{r}
+library(tidyverse)
+library(ggforce)
+
+# PARAMETERS - Customizable colors for each row
+# ALOD4 row colors
+alod4_positive_color <- "#9f8499"  # Teal - Ctx higher than ALOD4
+alod4_negative_color <- "#cc6828"  # Red - Ctx lower than ALOD4
+
+# OlyA row colors
+olya_positive_color <- "#9f8499"   # Light teal - Ctx higher than OlyA
+olya_negative_color <- "#006838"   # Light red - Ctx lower than OlyA
+
+column_spacing <- 0.08
+
+# Prepare the base data
+base_data <- df %>%
+  filter(Protein %in% proteins_to_plot) %>%
+  filter(GROUP != "control") %>%
+  group_by(Protein, GROUP) %>%
+  summarise(
+    mean_intensity = mean(LogIntensities, na.rm = TRUE),
+    n_measured = sum(!is.na(LogIntensities)),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    n_total = 3,
+    proportion_measured = n_measured / 3
+  )
+
+# Create difference_plot_data: Ctx - ALOD4 and Ctx - OlyA
+difference_plot_data <- base_data %>%
+  pivot_wider(
+    id_cols = Protein,
+    names_from = GROUP,
+    values_from = c(mean_intensity, proportion_measured)
+  ) %>%
+  mutate(
+    diff_ALOD4 = mean_intensity_Ctx - mean_intensity_ALOD4,
+    diff_OlyA = mean_intensity_Ctx - mean_intensity_OlyA
+  ) %>%
+  pivot_longer(
+    cols = c(diff_ALOD4, diff_OlyA),
+    names_to = "comparison",
+    values_to = "foldchange",
+    names_prefix = "diff_"
+  ) %>%
+  mutate(
+    proportion_measured = proportion_measured_Ctx,
+    angle_measured = proportion_measured * 360,
+    abs_foldchange = abs(foldchange),
+    # NO CAP - just log transform
+    log_foldchange = log(abs_foldchange + 0.1),
+    sign_foldchange = ifelse(foldchange >= 0, "positive", "negative"),
+    # Combined variable for coloring by comparison AND sign
+    color_group = paste(comparison, sign_foldchange, sep = "_"),
+    Protein = factor(Protein, levels = proteins_to_plot),
+    x_pos = as.numeric(Protein),
+    y_pos = as.numeric(factor(comparison, levels = c("ALOD4", "OlyA")))
+  ) %>%
+  select(Protein, comparison, foldchange, abs_foldchange, log_foldchange, 
+         sign_foldchange, color_group, proportion_measured, angle_measured, x_pos, y_pos)
+
+# Split data: full coverage vs partial coverage
+full_coverage <- difference_plot_data %>% filter(proportion_measured == 1)
+partial_coverage <- difference_plot_data %>% filter(proportion_measured < 1)
+
+# Calculate scaling factors
+min_log <- min(difference_plot_data$log_foldchange)
+max_log <- max(difference_plot_data$log_foldchange)
+
+# Create color mapping
+color_mapping <- c(
+  "ALOD4_positive" = alod4_positive_color,
+  "ALOD4_negative" = alod4_negative_color,
+  "OlyA_positive" = olya_positive_color,
+  "OlyA_negative" = olya_negative_color
+)
+```
+
+
+```{r}
+# Plot the differences
+p <- ggplot() +
+  # PARTIAL COVERAGE: Background circles (grey)
+  geom_arc_bar(
+    data = partial_coverage,
+    aes(x0 = x_pos, 
+        y0 = y_pos,
+        r0 = 0, 
+        r = 0.08 + (log_foldchange - min_log) / (max_log - min_log) * 0.35,
+        start = 0, 
+        end = 2*pi),
+    fill = "grey90",
+    color = "grey60",
+    linewidth = 0.3
+  ) +
+  # PARTIAL COVERAGE: Measured portion (pac-man style)
+  geom_arc_bar(
+    data = partial_coverage,
+    aes(x0 = x_pos, 
+        y0 = y_pos,
+        r0 = 0, 
+        r = 0.08 + (log_foldchange - min_log) / (max_log - min_log) * 0.35,
+        start = 0, 
+        end = angle_measured * pi/180,
+        fill = color_group),
+    color = "black",
+    linewidth = 0.3
+  ) +
+  # FULL COVERAGE: Plain circles (no black line)
+  geom_circle(
+    data = full_coverage,
+    aes(x0 = x_pos, 
+        y0 = y_pos,
+        r = 0.1 + (log_foldchange - min_log) / (max_log - min_log) * 0.38,
+        fill = color_group),
+    color = "black",
+    linewidth = 0.3
+  ) +
+  # Scales
+  scale_x_continuous(
+    breaks = 1:length(proteins_to_plot),
+    labels = proteins_to_plot,
+    position = "top",
+    expand = expansion(add = column_spacing)
+  ) +
+  scale_y_continuous(
+    breaks = 1:2,
+    labels = c("Ctx - ALOD4", "Ctx - OlyA"),
+    trans = "reverse"
+  ) +
+  scale_fill_manual(
+    values = color_mapping,
+    labels = c(
+      "ALOD4_positive" = "ALOD4: Ctx higher",
+      "ALOD4_negative" = "ALOD4: Ctx lower",
+      "OlyA_positive" = "OlyA: Ctx higher",
+      "OlyA_negative" = "OlyA: Ctx lower"
+    ),
+    name = "Log2 Fold Change"
+  ) +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 0, vjust = 0, size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.position = "right",
+    plot.margin = margin(10, 10, 10, 10)
+  ) +
+  labs(
+    title = "Log2 Fold Change: Ctx relative to ALOD4 and OlyA",
+    subtitle = "Circle size = ln(|FC|) | Color = direction | Completeness = Ctx replicate coverage"
+  )
+p
+```
+
+
+```{r}
+ggsave("Ctx-foldchange_plot.png", p, width = 7, height = 4, dpi=600)
+```
+
+
+legend
+```{r}
+min_log <- min(difference_plot_data$log_foldchange)
+max_log <- max(difference_plot_data$log_foldchange)
+
+# Create comprehensive legend
+size_legend_data <- tibble(
+  abs_fc = c(0.2, 0.5, 1.0, 4),
+  log_fc = log(abs_fc + 0.1)
+) %>%
+  mutate(
+    radius = 0.08 + (log_fc - min_log) / (max_log - min_log) * 0.35,
+    x = rep(c(1, 2), length.out = n()),
+    y = rep(1:4, each = 2)[1:n()],
+    label = sprintf("|FC| = %.1f", abs_fc)
+  )
+
+# Publication-ready legend
+size_legend_pub <- ggplot(size_legend_data) +
+  geom_circle(
+    aes(x0 = x, y0 = y, r = radius),
+    fill = "#E8E8E8",
+    color = "black",
+    linewidth = 0.4
+  ) +
+#  geom_text(
+#    aes(x = x + 0.55, y = y, label = label),
+#    hjust = 0,
+#    size = 3.5,
+#    family = "sans"
+#  ) +
+  annotate("text", x = 1.5, y = 4.7, label = "Absolute Log2 Fold Change", 
+           fontface = "bold", size = 4.5) +
+  scale_x_continuous(limits = c(0.3, 3.2)) +
+  scale_y_continuous(limits = c(0.3, 5)) +
+  coord_equal() +
+  theme_void() +
+  theme(
+    plot.background = element_rect(fill = "white", color = "black", linewidth = 1),
+    plot.margin = margin(15, 15, 15, 15)
+  )
+
+print(size_legend_pub)
+ggsave("circle_size_legend_publication.pdf", size_legend_pub, width = 3.5, height = 5)
+```
+

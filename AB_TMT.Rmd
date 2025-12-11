@@ -1,0 +1,148 @@
+---
+title: "AB_TMT-analysis"
+output: html_document
+date: "2025-07-14"
+---
+
+```{r}
+# Load required libraries
+library(pbapply)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(tidyverse)
+library(viridis)
+library(patchwork)
+library(gridExtra)
+library(dplyr)
+library(tidyr)
+library(readr)
+```
+
+
+```{r}
+setwd("~/R_data/AP2-296/AP2-296_TMT10-RTS/")
+#data <- read.csv("your_data_file.csv", stringsAsFactors = FALSE)
+data <- read_tsv("AP2-296_RTS_abundance_protein_None.tsv")
+```
+
+
+```{r}
+# Select only the intensity columns and protein identifiers
+intensity_data <- data %>%
+  select(Index, Gene, control, Ctx1:Ctx3, ALO1:ALO3, Olya1:Olya3)
+
+# Convert intensity columns to numeric (handle NA values)
+intensity_cols <- c("control", paste0("Ctx", 1:3), paste0("ALO", 1:3), paste0("Olya", 1:3))
+intensity_data[intensity_cols] <- lapply(intensity_data[intensity_cols], as.numeric)
+
+# 3) Calculate group averages and statistics
+results <- intensity_data %>%
+  rowwise() %>%
+  mutate(
+    # Calculate means for each group (excluding NAs)
+    Ctx_mean = mean(c(Ctx1, Ctx2, Ctx3), na.rm = TRUE),
+    ALO_mean = mean(c(ALO1, ALO2, ALO3), na.rm = TRUE),
+    Olya_mean = mean(c(Olya1, Olya2, Olya3), na.rm = TRUE),
+    
+    # Calculate standard deviations for variance assessment
+    Ctx_sd = sd(c(Ctx1, Ctx2, Ctx3), na.rm = TRUE),
+    ALO_sd = sd(c(ALO1, ALO2, ALO3), na.rm = TRUE),
+    Olya_sd = sd(c(Olya1, Olya2, Olya3), na.rm = TRUE),
+    
+    # Calculate coefficient of variation (CV) for relative variance
+    Ctx_cv = Ctx_sd / abs(Ctx_mean),
+    ALO_cv = ALO_sd / abs(ALO_mean),
+    Olya_cv = Olya_sd / abs(Olya_mean),
+    
+    # Count number of valid measurements per group
+    Ctx_n = sum(!is.na(c(Ctx1, Ctx2, Ctx3))),
+    ALO_n = sum(!is.na(c(ALO1, ALO2, ALO3))),
+    Olya_n = sum(!is.na(c(Olya1, Olya2, Olya3))),
+    
+    # Calculate pairwise fold changes between conditions (since data is log2, subtract means)
+    # Then convert back to linear fold change with 2^difference
+    FC_Ctx_vs_ALO = 2^(Ctx_mean - ALO_mean),
+    FC_Ctx_vs_Olya = 2^(Ctx_mean - Olya_mean),
+    FC_ALO_vs_Olya = 2^(ALO_mean - Olya_mean),
+    FC_Olya_vs_ALO = 2^(Olya_mean - ALO_mean),
+    
+    # Log2 fold changes (differences in log2 space)
+    log2FC_Ctx_vs_ALO = Ctx_mean - ALO_mean,
+    log2FC_Ctx_vs_Olya = Ctx_mean - Olya_mean,
+    log2FC_ALO_vs_Olya = ALO_mean - Olya_mean,
+    log2FC_Olya_vs_ALO = Olya_mean - ALO_mean,
+    
+    # Calculate ratios relative to control
+    log2_Ctx_vs_Control = Ctx_mean - control,  # log2 difference
+    log2_ALO_vs_Control = ALO_mean - control,
+    log2_Olya_vs_Control = Olya_mean - control,
+    
+    # Linear fold changes vs control
+    FC_Ctx_vs_Control = 2^(Ctx_mean - control),
+    FC_ALO_vs_Control = 2^(ALO_mean - control),
+    FC_Olya_vs_Control = 2^(Olya_mean - control)
+  ) %>%
+  ungroup()
+
+# 4) Create a summary table with key results
+summary_results <- results %>%
+  select(Index, Gene, 
+         # Control value
+         control,
+         # Group means
+         Ctx_mean, ALO_mean, Olya_mean,
+         # Variance measures
+         Ctx_sd, ALO_sd, Olya_sd,
+         Ctx_cv, ALO_cv, Olya_cv,
+         # Sample sizes
+         Ctx_n, ALO_n, Olya_n,
+         # Pairwise comparisons between conditions
+         FC_Ctx_vs_ALO, FC_Ctx_vs_Olya, FC_ALO_vs_Olya, FC_Olya_vs_ALO,
+         log2FC_Ctx_vs_ALO, log2FC_Ctx_vs_Olya, log2FC_ALO_vs_Olya, log2FC_Olya_vs_ALO,
+         # Comparisons vs control
+         log2_Ctx_vs_Control, log2_ALO_vs_Control, log2_Olya_vs_Control,
+         FC_Ctx_vs_Control, FC_ALO_vs_Control, FC_Olya_vs_Control)
+
+# View the results
+head(summary_results)
+
+# 6) Optional: Add variance categories
+variance_assessment <- summary_results %>%
+  mutate(
+    # Create variance categories based on CV
+    Ctx_variance_category = case_when(
+      Ctx_cv < 0.1 ~ "Low variance",
+      Ctx_cv < 0.3 ~ "Medium variance",
+      TRUE ~ "High variance"
+    ),
+    ALO_variance_category = case_when(
+      ALO_cv < 0.1 ~ "Low variance",
+      ALO_cv < 0.3 ~ "Medium variance",
+      TRUE ~ "High variance"
+    ),
+    Olya_variance_category = case_when(
+      Olya_cv < 0.1 ~ "Low variance",
+      Olya_cv < 0.3 ~ "Medium variance",
+      TRUE ~ "High variance"
+    ),
+    
+    # Calculate mean CV across all conditions
+    mean_cv = rowMeans(cbind(Ctx_cv, ALO_cv, Olya_cv), na.rm = TRUE),
+    
+    # Flag proteins with high variance in any condition
+    high_variance_flag = (Ctx_cv > 0.3 | ALO_cv > 0.3 | Olya_cv > 0.3)
+  )
+
+# View variance assessment
+head(variance_assessment)
+```
+
+```{r}
+write.csv(summary_results, "AP2-296_TMT10-RTS__summary.csv", row.names = FALSE)
+```
+
