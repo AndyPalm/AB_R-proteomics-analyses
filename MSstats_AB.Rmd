@@ -1,0 +1,325 @@
+---
+title: "MSstats"
+output: html_document
+date: "2025-04-01"
+---
+
+```{r setup, include=FALSE}
+library(pak)
+library(MSstats)
+library(MSstatsBig)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+library(RColorBrewer)
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(janitor)
+```
+
+## converting to suitable format so "data_process" function  can correctly parse the data and assign biological replicates, and not assign all samples as technical replicates. Needed unless you already have UNIQUE identifiers for biological replicates: cannot be "1,2,...n" between conditions.
+```{r}
+setwd("C:/Users/andbp/Documents/R_data/R_local/AP2-339B/data/raw/")
+msstats_df <- read.csv("msstats.csv")
+
+# One BioReplicate per unique Run within each Condition
+fix_biorep_by_run <- function(df) {
+  req <- c("Condition","Run")
+  stopifnot(all(req %in% names(df)))
+
+  df <- df %>%
+    mutate(
+      Condition = str_trim(as.character(Condition)),
+      Run       = str_trim(as.character(Run))
+    )
+
+  #each Run must have a single Condition
+  bad_cond <- df %>%
+    distinct(Run, Condition) %>%
+    count(Run, name = "n_conditions") %>%
+    filter(n_conditions > 1)
+  if (nrow(bad_cond) > 0) {
+    stop("These Run IDs map to multiple Conditions: ",
+         paste(bad_cond$Run, collapse = ", "),
+         call. = FALSE)
+  }
+
+  #run-level map: Condition-Run -> BioReplicate label
+  run_map <- df %>%
+    distinct(Condition, Run) %>%
+    group_by(Condition) %>%
+    arrange(Run, .by_group = TRUE) %>%
+    mutate(BioReplicate = paste0(Condition, "-", row_number())) %>%
+    ungroup()
+
+  #apply mapping; remove any old BioReplicate column to avoid conflicts
+  df2 <- df %>%
+    select(-any_of("BioReplicate")) %>%
+    left_join(run_map, by = c("Condition","Run"))
+
+  #each Run should now have one BioReplicate
+  bad_biorep <- df2 %>%
+    distinct(Run, BioReplicate) %>%
+    count(Run, name = "n_biorep") %>%
+    filter(n_biorep > 1)
+  if (nrow(bad_biorep) > 0) {
+    stop("These Run IDs map to multiple BioReplicates: ",
+         paste(bad_biorep$Run, collapse = ", "),
+         call. = FALSE)
+  }
+
+  df2
+}
+
+msstats_fixed  <- fix_biorep_by_run(msstats_df)
+msstats_input  <- FragPipetoMSstatsFormat(msstats_fixed)
+
+msstats_fixed %>%
+  distinct(Condition, BioReplicate, Run) %>%
+  arrange(Condition, BioReplicate) %>%
+  count(Condition, name = "n_BioReplicates")
+
+```
+
+Optional: for peptide-level data
+```{r}
+#msstats_input$ProteinName = msstats_input$PeptideSequence
+```
+
+dataProcess
+```{r}
+summarized_data = dataProcess(msstats_input,
+    logTrans=2,
+		normalization="none",
+		nameStandards=NULL,
+		featureSubset="topN",
+		n_top_feature=4,
+		summaryMethod="TMP",
+		equalFeatureVar=TRUE,
+		censoredInt="NA",
+		MBimpute=TRUE,
+		remove50missing=FALSE)
+
+quantification(summarized_data, type = "Sample")
+quantification(summarized_data, type = "Group")
+```
+
+Plots
+```{r}
+dataProcessPlots(summarized_data,
+                 type="QCPlot",
+                 which.Protein="allonly",
+                 address=FALSE
+                 )
+```
+```{r}
+dataProcessPlots(summarized_data,
+                 type="ProfilePlot",
+                 originalPlot=TRUE,
+                 summaryPlot=TRUE,
+                 which.Protein="P00533",
+                 address=FALSE
+                 )
+```
+```{r}
+dataProcessPlots(summarized_data,
+                 type="ConditionPlot",
+                 interval="CI",
+                 which.Protein="P00533",
+                 address=FALSE
+                 )
+```
+Group comparisons and stats
+```{r}
+#generate all pairwise group comparisons
+groups <- c("ALOD4DF","ALOD4UF","OlyAUF","OlyADF","UF","DF")
+pairs <- combn(groups, 2, simplify = FALSE)
+
+comparison_all <- t(sapply(pairs, function(p) {
+  v <- setNames(rep(0, length(groups)), groups)
+  v[p[2]] <-  1
+  v[p[1]] <- -1
+  v
+}))
+
+rownames(comparison_all) <- sapply(pairs, /(p) paste0(p[2], "_vs_", p[1]))
+comparison_all
+
+```
+
+```{r}
+comparison <- matrix(c(
+  -1,  1,  0,  0,  0,  0,
+  -1,  0,  1,  0,  0,  0,
+   0,  0,  1, -1,  0,  0,
+   0,  1,  0, -1,  0,  0,
+  -1,  0,  0,  1,  0,  0,
+   0, -1,  1,  0,  0,  0,
+   0, -1,  0,  0,  1,  0,
+   0,  0, -1,  0,  1,  0,
+  -1,  0,  0,  0,  0,  1,
+   0,  0,  0, -1,  0,  1
+), nrow = 10, byrow = TRUE)
+
+row.names(comparison) <- c(
+  "ALOD4UF_vs_ALOD4DF",
+  "OlyAUF_vs_ALOD4DF",
+  "OlyAUF_vs_OlyADF",
+  "ALOD4UF_vs_OlyADF",
+  "OlyADF_vs_ALOD4DF",
+  "OlyAUF_vs_ALOD4_UF",
+  "UF_vs_ALOD4UF",
+  "UF_vs_OlyAUF",
+  "DF_vs_ALOD4DF",
+  "DF_vs_OlyADF"
+)
+
+colnames(comparison) <- c("ALOD4DF","ALOD4UF","OlyAUF","OlyADF","UF","DF")
+
+model_results = groupComparison(comparison, 
+                                summarized_data)
+
+save(model_results, file="Protocol2A_model_results_imputed.Rdata")
+
+head(model_results$ComparisonResult)
+```
+
+```{r}
+export_dir <- ("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339_HAECs_DF-UF_ALOD4_OLyA/01_Input_Search_Results")
+write.csv(model_results$ComparisonResult, file.path(export_dir, "339B-top4-features_comparison-results_imputed.csv"), row.names = FALSE)
+
+write.csv(model_results$ModelQC,file.path(export_dir, "339B-top4-features_modelqc_impute.csv"), row.names = FALSE)
+
+write.csv(summarized_data$FeatureLevelData, file.path(export_dir, "339B-top4-features_feature-level-data_impute.csv"), row.names = FALSE)
+
+write.csv(summarized_data$ProteinLevelData, file.path(export_dir, "339B-top4-features_protein-level-data_impute.csv"), row.names = FALSE)
+```
+
+Redoing pvalue adjustment - removing NA values for pvalue/SE
+```{r}
+res <- model_results$ComparisonResult %>% as_tibble()
+
+res_clean <- res %>%
+  mutate(valid = is.na(issue) & is.finite(log2FC) & !is.na(SE) & !is.na(pvalue)) %>%
+  filter(valid) %>%
+  group_by(Label) %>%
+  mutate(q_within = p.adjust(pvalue, "BH")) %>%
+  ungroup() %>%
+  mutate(q_global = p.adjust(pvalue, "BH"))
+
+write.csv(res_clean, "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/AP2-339B_MSstats_top4_impute/adj_pvalues-recomputed_339B-top4-features_comparison-results_imputed.csv", row.names = FALSE)
+```
+
+
+```{r}
+lab <- "OlyADF_vs_ALOD4DF"   # pick the label you filtered on
+df <- res_clean %>% filter(Label == lab) %>%
+  arrange(pvalue) %>%
+  mutate(
+    i = row_number(),
+    m = n(),
+    bh_raw = pvalue * m / i         # step-up rescaling
+  )
+
+tail_check <- df %>%
+  arrange(desc(i)) %>%
+  mutate(q_tail_cummin = cummin(bh_raw)) %>%
+  arrange(i)
+
+# Where does the plateau start?
+plateau_start <- tail_check %>%
+  filter(q_tail_cummin == min(q_tail_cummin)) %>%
+  summarize(first_rank = min(i), plateau_q = first(q_tail_cummin))
+
+plateau_start
+
+```
+
+
+More plots
+```{r}
+# VolcanoPlot
+groupComparisonPlots(model_results$ComparisonResult,
+                     type="VolcanoPlot",
+                     ProteinName = FALSE,
+                     which.Comparison = "OlyAUF_vs_OlyADF",
+                     address=FALSE)
+```
+
+
+```{r}
+# Heatmap
+groupComparisonPlots(model_results$ComparisonResult,
+                     type="Heatmap",
+                     address=FALSE)
+```
+
+
+```{r}
+# ComparisonPlot
+groupComparisonPlots(model_results$ComparisonResult,
+                     type="ComparisonPlot",
+                     which.Protein="P00533",
+                     address=FALSE)
+```
+
+
+```{r}
+# Sample size calculation
+sample_calc = designSampleSize(model_results$FittedModel,
+                               desiredFC=c(1.25,2.5),
+                               FDR = 0.05,
+                               numSample = TRUE,
+                               power = 0.8)
+```
+
+
+```{r}
+# Plot sample size
+designSampleSizePlots(sample_calc)
+```
+
+
+Arguments for dataProcess function:
+raw
+name of the raw (input) data set.
+logTrans
+logarithm transformation with base 2(default) or 10.
+normalization
+normalization to remove systematic bias between MS runs. There are three different normalizations supported. 'equalizeMedians'(default) represents constant normalization (equalizing the medians) based on reference signals is performed. 'quantile' represents quantile normalization based on reference signals is performed. 'globalStandards' represents normalization with global standards proteins. FALSE represents no normalization is performed.
+nameStandards
+vector of global standard peptide names. only for normalization with global standard peptides.
+betweenRunInterferenceScore
+interference is detected by a between-run-interference score. TRUE means the scores are generated automatically and stored in a .csv file. FALSE(default) means no scores are generated.
+fillIncompleteRows
+If the input dataset has incomplete rows, TRUE(default) adds the rows with intensity value=NA for missing peaks. FALSE reports error message with list of features which have incomplete rows.
+featureSubset
+"all"(default) uses all features that the data set has. "top3" uses top 3 features which have highest average of log2(intensity) across runs. "topN" uses top N features which has highest average of log2(intensity) across runs. It needs the input for n_top_feature option. "highQuality" selects the most informative features which agree the pattern of the average features across the runs.
+remove_proteins_with_interference
+TRUE allows the algorithm to remove the proteins if deem interfered. FALSE (default) does not allow to remove the proteins, in which all features are interfered. In this case, the proteins, which will completely loss all features by the algorithm, will keep the most abundant peptide.
+n_top_feature
+The number of top features for featureSubset='topN'. Default is 3, which means to use top 3 features.
+summaryMethod
+"TMP"(default) means Tukey's median polish, which is robust estimation method. "linear" uses linear mixed model. "logOfSum" conducts log2 (sum of intensities) per run.
+equalFeatureVar
+only for summaryMethod="linear". default is TRUE. Logical variable for whether the model should account for heterogeneous variation among intensities from different features. Default is TRUE, which assume equal variance among intensities from features. FALSE means that we cannot assume equal variance among intensities from features, then we will account for heterogeneous variation from different features.
+filterLogOfSum
+For summaryMethod="logOfSum" option, TRUE (default) will filter out the runs which have any missing value. FALSE will not remove any run or features.
+censoredInt
+Missing values are censored or at random. 'NA' (default) assumes that all 'NA's in 'Intensity' column are censored. '0' uses zero intensities as censored intensity. In this case, NA intensities are missing at random. The output from Skyline should use '0'. Null assumes that all NA intensites are randomly missing.
+cutoffCensored
+Cutoff value for censoring. only with censoredInt='NA' or '0'. Default is 'minFeature', which uses minimum value for each feature.'minFeatureNRun' uses the smallest between minimum value of corresponding feature and minimum value of corresponding run. 'minRun' uses minumum value for each run.
+MBimpute
+only for summaryMethod="TMP" and censoredInt='NA' or '0'. TRUE (default) imputes 'NA' or '0' (depending on censoredInt option) by Accelated failure model. FALSE uses the values assigned by cutoffCensored.
+original_scale
+Default is FALSE, which uses log transformed intensity for TMP. TRUE uses original intensitiesy for TMP.
+logsum
+Default is FALSE, which uses log of sum intensities after residuals from TMP.
+remove50missing
+only for summaryMethod="TMP". TRUE removes the runs which have more than 50% missing values. FALSE is default.
+skylineReport
+default is FALSE. 'TRUE' means raw (input) data set from Skyline MSstats input format, which includes 'Truncated' column and can distinguish zero value and NA (missing values). Zero values in 'Intensity' column will be kept for 'skyline' summary method. Otherwise, they will be replaced with one in order to log transform.
+address
+the name of folder that will store the results. Default folder is the current working directory. The other assigned folder has to be existed under the current working directory. An output csv file is automatically created with the default name of "BetweenRunInterferenceFile.csv". The command address can help to specify where to store the file as well as how to modify the beginning of the file name.
+

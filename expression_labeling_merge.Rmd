@@ -1,0 +1,98 @@
+---
+title: "Expression_labeling_merge"
+output: html_document
+date: "2025-12-12"
+---
+```{r}
+box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
+ref_dir  <- file.path(box_root, "Reference_dbs")
+exp1_dir <- file.path(box_root, "AP2-339_HAECs_DF-UF_ALOD4_OLyA", "01_Input_Search_Results")
+exp2_dir <- file.path(box_root, "AP2-327_HAEC-expression", "01_Input_Search_Results")
+output_dir <- file.path(box_root, "POCA2", "03_graphs_plots")
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+library(tidyverse)
+library(pbapply)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(janitor)
+library(here)
+```
+
+Read results files (as .csv)
+```{r}
+# 1. Read file with gene names and UniProt IDs (accession #s). Make sure to use "primary gene names"!
+df.labels <- read_excel(file.path(ref_dir, "uniprot_hs_29may25.xlsx"))
+lookup <- df.labels[, c("ProteinID", "Gene")]
+# 2. Read experiment result files
+df1.comparison <- read.csv(file.path(exp1_dir, "339B-top4-features_comparison-results_imputed.csv"))
+df1.protein <-read.csv(file.path(exp1_dir, "339B-top4-features_protein-level-data_impute.csv"))
+df2.comparison <- read.csv(file.path(exp2_dir, "327-top4-features_comparison-results_imputed.csv"))
+df2.protein <- read.csv(file.path(exp2_dir, "327-top4-features_protein-level-data_impute.csv"))
+
+# 3. Define target proteins for highlighting in plots
+highlight_targets <- TRUE
+target_file_path <- here::here("data", "target_proteins.csv")
+```
+
+Merge based on "ProteinID" aka Uniprot Accession
+```{r}
+source(here::here("src", "functions.R"))
+# 1. Define the prefixes/suffixes that define different cell states
+# "negative" = The denominator in foldchange calculation (first in string)
+# "positive" = The numerator in foldchange calculation (second in string)
+denom_state <- "UF" 
+num_state   <- "DF"
+
+# 2. Filter Experiment 1 (Treatments), hardcoding the ALOD4/OlyA mixed comparisons
+# 2. Filter Experiment 1 (Treatments) - Terminal Safe Version
+df1_clean <- df1.comparison %>% mutate(Condition = case_when(Label == "ALOD4UF_vs_ALOD4DF" ~ "ALOD4", Label == "OlyAUF_vs_OlyADF" ~ "OlyA", Label == "OlyAUF_vs_ALOD4DF" ~ "OlyA vs ALOD4", Label == "ALOD4UF_vs_OlyADF" ~ "ALOD4 vs OlyA", TRUE ~ NA_character_)) %>% filter(!is.na(Condition)) %>% select(Protein, Condition, log2FC, pvalue, adj.pvalue)
+
+# 3. Filter Experiment 2 (Expression)
+df2_clean <- df2.comparison %>%
+  filter(Label == paste0(denom_state, "_vs_", num_state)) %>%
+  mutate(Condition = "Control")
+```
+
+Merge Expression Data onto Labeling Data
+```{r}
+# 1. Prepare Reference (Compact Version)
+df_expression_ref <- df2_clean %>%
+  select(Protein, log2FC, pvalue, adj.pvalue) %>%
+  rename(expr_log2FC = log2FC, expr_pvalue = pvalue, expr_adj_pvalue = adj.pvalue)
+
+# 2. Join (Compact Version)
+# Merge Expression Data onto Labeling Data (Fixed)
+df_combined_fc <- df1_clean %>% left_join(df_expression_ref, by = "Protein") %>% relocate(Protein, Condition, log2FC, expr_log2FC, .after = 0)
+
+# 3. Check
+head(df_combined_fc)
+```
+
+Plot expression/labeling foldchanges
+```{r}
+source(here::here("src", "plot_labeling_vs_expression.R"))
+ggsave(file.path(output_dir, "Labeling_vs_Expression_labels_10x10.pdf"), plot = p_fc, width = 10, height = 10)
+```
+
+
+Multiple linear regression analysis - protein level
+```{r}
+#replicate-level protein ANCOVA, mean expression intensity used as covariate
+source(here::here("src", "protein_anova_analysis.R")) 
+#scatter plot of ANCOVA results
+source(here::here("src", "plot_ancova_scatter.R"))
+#waterfall plot of ANCOVA results
+source(here::here("src", "plot_ancova_waterfall.R"))
+```
+
+```{r}
+ggsave(file.path(output_dir, "HAEC_expression-labeling_ANCOVA-scatter_labels.pdf"), plot = p_scatter, width = 6, height = 6)
+ggsave(file.path(output_dir, "ANCOVA_Waterfall.pdf"), plot = p_water, width = 10, height = 6)
+```
+
+```{r}
+
+```
