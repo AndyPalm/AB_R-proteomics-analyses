@@ -1,0 +1,93 @@
+---
+title: "DIA_feature_extract_and_plot"
+output: html_document
+date: "2025-12-15"
+---
+Extract feature-level data for specific proteins from DIA-NN, the MSstats.csv output, and graph the intensities.
+```{r}
+extract_list <- c("EGFR")  ## list your proteins here!!
+box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
+ref_dir  <- file.path(box_root, "Reference_dbs")
+exp1_dir <- file.path(box_root, "AP2-296_A431-3probe", "01_Input_Search_Results")
+parquet_files <- file.path(box_root, "AP2-296_A431-3probe", "02_R_Intermediates")
+output_dir <- file.path(box_root, "POCA2", "03_graphs_plots")
+if (!dir.exists(output_dir)) {dir.create(output_dir, recursive = TRUE)
+}
+library(tidyverse)
+library(pbapply)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(janitor)
+library(here)
+library(arrow)
+library(Hmisc)
+```
+
+```{r}
+# 1. Read feature-level file
+
+# Define paths for the source CSV and the target Parquet file
+csv_source <- file.path(exp1_dir, "296-top4-features_feature-level-data_impute.csv")
+pq_target  <- file.path(parquet_files, "296-top4-features_feature-level-data_impute.parquet")
+
+# Conditional Logic: Only convert if the parquet file doesn't already exist
+if (!file.exists(pq_target)) {
+  message("Parquet file not found. Reading CSV and converting... (This may take a moment)")
+  
+  # read_csv_arrow is often faster than readr::read_csv for massive files
+  temp_df <- arrow::read_csv_arrow(csv_source) 
+  
+  # Write to parquet
+  arrow::write_parquet(temp_df, pq_target)
+  
+  # Clean up memory immediately
+  rm(temp_df)
+  gc() 
+  message("Conversion complete.")
+} else {
+  message("Parquet file found. Loading cached data.")
+}
+
+# Read the optimized Parquet file
+exp1.features <- arrow::read_parquet(pq_target)
+
+# 2. load UniProt accession <-> Gene mapping file and apply to features
+df.labels <- read_excel(file.path(ref_dir, "uniprot_hs_29may25.xlsx"))
+lookup <- df.labels %>% select(ProteinID, Gene) # Tidyverse style selection
+exp1.features <- exp1.features %>%
+  left_join(lookup, by = c("PROTEIN" = "ProteinID")) %>%
+  relocate(Gene, .after = PROTEIN) # Move Gene column to the front for easier viewing
+
+# Verify the merge
+head(exp1.features)
+```
+
+Extracting features
+```{r}
+# 1. Clean the dataframe (The Surgical Fix)
+# Check if the first column name is empty or NA, and remove it if so.
+if (colnames(exp1.features)[1] == "" || is.na(colnames(exp1.features)[1])) {
+  message("Detected empty column header (index artifact). Removing column 1.")
+  exp1.features <- exp1.features[, -1] 
+}
+
+# 2. Filter
+features_subset <- exp1.features %>% 
+  filter(Gene %in% extract_list)
+
+# 3. Validation
+if (nrow(features_subset) == 0) {
+  warning("No rows returned. Check if 'EGFR' matches the casing in your 'Gene' column exactly.")
+} else {
+  message(paste("Success! Extracted", nrow(features_subset), "rows for:", paste(extract_list, collapse=", ")))
+  
+  # Preview the clean data
+  print(head(features_subset))
+}
+```
+
+```{r plot_extraction, message=FALSE, warning=FALSE}
+source(here::here("src", "DIA_feature_extract_boxwhisker.R")) 
+batch_plot_genes(extract_list, exp1.features, output_dir)
+```
