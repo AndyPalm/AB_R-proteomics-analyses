@@ -1,6 +1,4 @@
-# DIA_feature_extract_boxwhisker.R
-
-# plot_utils.R
+# DIA_feature_extract_barplots.R
 
 # -------------------------------------------------------------------
 # Helper Function 1: Plot a single gene
@@ -13,25 +11,24 @@ plot_top4_features <- function(data, gene_name, output_dir) {
   message(paste("Processing plot for:", gene_name))
   
   # 1. Filter for specific gene
-  gene_data <- data %>% filter(Gene == gene_name)
+  gene_data <- data %>% dplyr::filter(Gene == gene_name)
   
   # 2. Select Top 4 Features Logic
   top4_features <- gene_data %>%
-    group_by(FEATURE) %>%
-    summarize(mean_abundance = mean(ABUNDANCE, na.rm = TRUE)) %>%
-    slice_max(order_by = mean_abundance, n = 4) %>%
-    pull(FEATURE)
+    dplyr::group_by(FEATURE) %>%
+    dplyr::summarize(mean_abundance = mean(ABUNDANCE, na.rm = TRUE)) %>%
+    dplyr::slice_max(order_by = mean_abundance, n = 4) %>%
+    dplyr::pull(FEATURE)
   
   # Filter to just these features
   plot_data <- gene_data %>%
-    filter(FEATURE %in% top4_features)
+    dplyr::filter(FEATURE %in% top4_features)
   
   # 3. Fix Factor Levels (User-specified order)
-  # We use the exact names and order requested: Ctx, ALOD4, OlyA, control
   plot_data <- plot_data %>%
-    mutate(GROUP = fct_relevel(GROUP, "Ctx", "ALOD4", "OlyA", "control")) %>% 
-    arrange(GROUP, SUBJECT) %>%
-    mutate(SUBJECT = factor(SUBJECT, levels = unique(SUBJECT)))
+    dplyr::mutate(GROUP = fct_relevel(GROUP, "Ctx", "ALOD4", "OlyA", "control")) %>% 
+    dplyr::arrange(GROUP, SUBJECT) %>%
+    dplyr::mutate(SUBJECT = factor(SUBJECT, levels = unique(SUBJECT)))
   
   # 4. Generate the Plot (Bar + Error + Points)
   p <- ggplot(plot_data, aes(x = SUBJECT, y = ABUNDANCE)) +
@@ -41,15 +38,14 @@ plot_top4_features <- function(data, gene_name, output_dir) {
                  alpha = 0.6, color = "black", width = 0.7) +
     
     # Error bar layer (Mean +/- 1 SD)
-    # Note: changed 'size' to 'linewidth' to fix warning
     stat_summary(geom = "errorbar", fun.data = mean_sdl, 
                  fun.args = list(mult = 1), width = 0.2, linewidth = 0.8) +
     
     # Points layer (Individual features)
-    geom_jitter(width = 0.1, shape = 1, size = 2, color = "black", stroke = 1) +
+    geom_jitter(width = 0.2, shape = 1, size = 1.5, color = "black", stroke = 1) +
     
     # Zoom Y-axis
-    coord_cartesian(ylim = c(18, 30)) +
+    coord_cartesian(ylim = c(19, 29)) +
     
     # Aesthetics
     theme_bw() +
@@ -61,14 +57,17 @@ plot_top4_features <- function(data, gene_name, output_dir) {
     ) +
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1),
-      legend.position = "bottom"
+      legend.position = "bottom",
+      # NEW: Remove major and minor gridlines
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
     )
   
-  # 5. Save the Plot
+  # 5. Save the Plot as PDF
   safe_name <- gsub("[^[:alnum:]]", "_", gene_name)
-  filename <- file.path(output_dir, paste0("Barplot_Top4_", safe_name, ".png"))
+  filename <- file.path(output_dir, paste0("296_Barplot_Top4_", safe_name, ".pdf"))
   
-  ggsave(filename, plot = p, width = 8, height = 6, dpi = 300)
+  ggsave(filename, plot = p, width = 5, height = 6)
   message(paste("Saved plot to:", filename))
   
   return(p)

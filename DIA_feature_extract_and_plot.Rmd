@@ -65,7 +65,7 @@ head(exp1.features)
 
 Extracting features
 ```{r}
-# 1. Clean the dataframe (The Surgical Fix)
+# 1. Clean the dataframe - need to do if "row headers = FALSE" was not set during export
 # Check if the first column name is empty or NA, and remove it if so.
 if (colnames(exp1.features)[1] == "" || is.na(colnames(exp1.features)[1])) {
   message("Detected empty column header (index artifact). Removing column 1.")
@@ -82,12 +82,12 @@ if (nrow(features_subset) == 0) {
 } else {
   message(paste("Success! Extracted", nrow(features_subset), "rows for:", paste(extract_list, collapse=", ")))
   
-  # Preview the clean data
+  # Preview the cleaned data
   print(head(features_subset))
 }
 ```
 
 ```{r plot_extraction, message=FALSE, warning=FALSE}
-source(here::here("src", "DIA_feature_extract_boxwhisker.R")) 
+source(here::here("src", "DIA_feature_extract_barplots.R")) 
 batch_plot_genes(extract_list, exp1.features, output_dir)
 ```
