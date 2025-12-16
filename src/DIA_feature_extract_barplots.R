@@ -48,8 +48,8 @@ plot_top4_features <- function(data, gene_name, output_dir) {
       width = 0.35
     ) +
     
-    # Zoom Y-axis
-    coord_cartesian(ylim = c(19, 29)) +
+    # Zoom Y-axis if desired
+    #coord_cartesian(ylim = c(19, 29)) +
     
     # Aesthetics
     theme_bw() +

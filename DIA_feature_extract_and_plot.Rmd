@@ -5,7 +5,7 @@ date: "2025-12-15"
 ---
 Extract feature-level data for specific proteins from DIA-NN, the MSstats.csv output, and graph the intensities.
 ```{r}
-extract_list <- c("EGFR")  ## list your proteins here!!
+extract_list <- c("EGFR","ADGRG1","ICAM1","ABI1","CD46","PLXNB2")  ## list your proteins here!!
 box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
 ref_dir  <- file.path(box_root, "Reference_dbs")
 exp1_dir <- file.path(box_root, "AP2-296_A431-3probe", "01_Input_Search_Results")
@@ -79,7 +79,7 @@ features_subset <- exp1.features %>%
 
 # 3. Validation
 if (nrow(features_subset) == 0) {
-  warning("No rows returned. Check if 'EGFR' matches the casing in your 'Gene' column exactly.")
+  warning("No rows returned. Check if gene names supplied match the casing in your 'Gene' column exactly.")
 } else {
   message(paste("Success! Extracted", nrow(features_subset), "rows for:", paste(extract_list, collapse=", ")))
   
