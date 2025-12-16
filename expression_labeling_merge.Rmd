@@ -34,7 +34,7 @@ df2.protein <- read.csv(file.path(exp2_dir, "327-top4-features_protein-level-dat
 
 # 3. Define target proteins for highlighting in plots
 highlight_targets <- TRUE
-target_file_path <- here::here("data", "target_proteins.csv")
+target_file_path <- here::here("data", "target_proteins_296-ALOD4.csv")
 ```
 
 Merge based on "ProteinID" aka Uniprot Accession
@@ -47,7 +47,6 @@ denom_state <- "UF"
 num_state   <- "DF"
 
 # 2. Filter Experiment 1 (Treatments), hardcoding the ALOD4/OlyA mixed comparisons
-# 2. Filter Experiment 1 (Treatments) - Terminal Safe Version
 df1_clean <- df1.comparison %>% mutate(Condition = case_when(Label == "ALOD4UF_vs_ALOD4DF" ~ "ALOD4", Label == "OlyAUF_vs_OlyADF" ~ "OlyA", Label == "OlyAUF_vs_ALOD4DF" ~ "OlyA vs ALOD4", Label == "ALOD4UF_vs_OlyADF" ~ "ALOD4 vs OlyA", TRUE ~ NA_character_)) %>% filter(!is.na(Condition)) %>% select(Protein, Condition, log2FC, pvalue, adj.pvalue)
 
 # 3. Filter Experiment 2 (Expression)
@@ -74,7 +73,7 @@ head(df_combined_fc)
 Plot expression/labeling foldchanges
 ```{r}
 source(here::here("src", "plot_labeling_vs_expression.R"))
-ggsave(file.path(output_dir, "Labeling_vs_Expression_labels_10x10.pdf"), plot = p_fc, width = 10, height = 10)
+ggsave(file.path(output_dir, "Labeling_vs_Expression_labels2.pdf"), plot = p_fc, width = 12, height = 12)
 ```
 
 
@@ -89,10 +88,11 @@ source(here::here("src", "plot_ancova_waterfall.R"))
 ```
 
 ```{r}
-ggsave(file.path(output_dir, "HAEC_expression-labeling_ANCOVA-scatter_labels.pdf"), plot = p_scatter, width = 6, height = 6)
+ggsave(file.path(output_dir, "HAEC_expression-labeling_ANCOVA-scatter_296-ALOD4-enriched-labels.pdf"), plot = p_scatter, width = 6, height = 8)
 ggsave(file.path(output_dir, "ANCOVA_Waterfall.pdf"), plot = p_water, width = 10, height = 6)
 ```
 
 ```{r}
-
+write_csv(df_combined_fc, file.path(box_root, "POCA2", "02_R_Intermediates", "AP2-339B-labeling_327-expression_data.csv"))
+write_csv(proximity_with_genes, file.path(box_root, "POCA2", "02_R_Intermediates", "AP2-339B_327-proximity-shift-scores.csv"))
 ```

@@ -33,7 +33,7 @@ p_fc <- ggplot(df_combined_fc, aes(x = expr_log2FC, y = log2FC)) +
   scale_color_brewer(palette = "Set2") +
   theme_bw() +
   labs(
-    title = "Labeling vs. Expression Changes (UF vs DF)",
+    title = "Labeling vs. Expression Changes (DF vs UF)",
     subtitle = "",
     x = "Expression Log2(Fold Change)",
     y = "Labeling Log2(Fold Change)"
