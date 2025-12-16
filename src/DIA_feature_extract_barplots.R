@@ -1,12 +1,10 @@
 # DIA_feature_extract_barplots.R
 
-# -------------------------------------------------------------------
-# Helper Function 1: Plot a single gene
-# -------------------------------------------------------------------
 plot_top4_features <- function(data, gene_name, output_dir) {
   
   require(tidyverse)
   require(ggplot2)
+  require(ggbeeswarm) 
   
   message(paste("Processing plot for:", gene_name))
   
@@ -24,25 +22,31 @@ plot_top4_features <- function(data, gene_name, output_dir) {
   plot_data <- gene_data %>%
     dplyr::filter(FEATURE %in% top4_features)
   
-  # 3. Fix Factor Levels (User-specified order)
+  # 3. Fix Factor Levels
   plot_data <- plot_data %>%
     dplyr::mutate(GROUP = fct_relevel(GROUP, "Ctx", "ALOD4", "OlyA", "control")) %>% 
     dplyr::arrange(GROUP, SUBJECT) %>%
     dplyr::mutate(SUBJECT = factor(SUBJECT, levels = unique(SUBJECT)))
   
-  # 4. Generate the Plot (Bar + Error + Points)
+  # 4. Generate the Plot
   p <- ggplot(plot_data, aes(x = SUBJECT, y = ABUNDANCE)) +
     
-    # Bar layer (Mean)
+    # Bar layer
     stat_summary(geom = "bar", fun = mean, aes(fill = GROUP), 
                  alpha = 0.6, color = "black", width = 0.7) +
     
-    # Error bar layer (Mean +/- 1 SD)
+    # Error bar layer
     stat_summary(geom = "errorbar", fun.data = mean_sdl, 
                  fun.args = list(mult = 1), width = 0.2, linewidth = 0.8) +
     
-    # Points layer (Individual features)
-    geom_jitter(width = 0.2, shape = 1, size = 1.5, color = "black", stroke = 1) +
+    # adjust width to vary spread of individual data points
+    ggbeeswarm::geom_quasirandom(
+      shape = 1, 
+      size = 1.5, 
+      color = "black", 
+      stroke = 1, 
+      width = 0.35
+    ) +
     
     # Zoom Y-axis
     coord_cartesian(ylim = c(19, 29)) +
@@ -58,12 +62,11 @@ plot_top4_features <- function(data, gene_name, output_dir) {
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1),
       legend.position = "bottom",
-      # NEW: Remove major and minor gridlines
       panel.grid.major = element_blank(),
       panel.grid.minor = element_blank()
     )
   
-  # 5. Save the Plot as PDF
+  # 5. Save as PDF
   safe_name <- gsub("[^[:alnum:]]", "_", gene_name)
   filename <- file.path(output_dir, paste0("296_Barplot_Top4_", safe_name, ".pdf"))
   
@@ -73,15 +76,10 @@ plot_top4_features <- function(data, gene_name, output_dir) {
   return(p)
 }
 
-# -------------------------------------------------------------------
-# Helper Function 2: Batch process a list of genes
-# -------------------------------------------------------------------
+# The batch_plot_genes function remains exactly the same
 batch_plot_genes <- function(gene_list, data, output_dir) {
-  
   require(purrr)
-  
   message(paste("Starting batch processing for", length(gene_list), "genes..."))
-  
   walk(gene_list, function(gene) {
     if (gene %in% data$Gene) {
       plot_top4_features(data, gene, output_dir)
@@ -89,6 +87,5 @@ batch_plot_genes <- function(gene_list, data, output_dir) {
       warning(paste("Skipping", gene, "- not found in dataset."))
     }
   })
-  
   message("Batch processing complete.")
 }

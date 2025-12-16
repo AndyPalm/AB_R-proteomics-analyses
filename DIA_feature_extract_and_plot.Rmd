@@ -22,6 +22,7 @@ library(janitor)
 library(here)
 library(arrow)
 library(Hmisc)
+library(beeswarm)
 ```
 
 ```{r}
