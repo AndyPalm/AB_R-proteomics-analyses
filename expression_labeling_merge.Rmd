@@ -29,12 +29,12 @@ lookup <- df.labels[, c("ProteinID", "Gene")]
 # 2. Read experiment result files
 df1.comparison <- read.csv(file.path(exp1_dir, "339B-top4-features_comparison-results_imputed.csv"))
 df1.protein <-read.csv(file.path(exp1_dir, "339B-top4-features_protein-level-data_impute.csv"))
-df2.comparison <- read.csv(file.path(exp2_dir, "327-top4-features_comparison-results_imputed.csv"))
-df2.protein <- read.csv(file.path(exp2_dir, "327-top4-features_protein-level-data_impute.csv"))
+df2.comparison <- read.csv(file.path(exp2_dir, "327-normalized_top4-features_comparison-results_imputed.csv"))
+df2.protein <- read.csv(file.path(exp2_dir, "327-normalized_top4-features_protein-level-data_impute.csv"))
 
 # 3. Define target proteins for highlighting in plots
 highlight_targets <- TRUE
-target_file_path <- here::here("data", "target_proteins_296-ALOD4.csv")
+target_file_path <- here::here("data", "target_proteins.csv")
 ```
 
 Merge based on "ProteinID" aka Uniprot Accession
@@ -51,7 +51,7 @@ df1_clean <- df1.comparison %>% mutate(Condition = case_when(Label == "ALOD4UF_v
 
 # 3. Filter Experiment 2 (Expression)
 df2_clean <- df2.comparison %>%
-  filter(Label == paste0(denom_state, "_vs_", num_state)) %>%
+  filter(Label == "DF_vs_UF") %>%  #make sure this matches the comparison designation in your expression dataset
   mutate(Condition = "Control")
 ```
 
@@ -73,7 +73,7 @@ head(df_combined_fc)
 Plot expression/labeling foldchanges
 ```{r}
 source(here::here("src", "plot_labeling_vs_expression.R"))
-ggsave(file.path(output_dir, "Labeling_vs_Expression_labels2.pdf"), plot = p_fc, width = 12, height = 12)
+ggsave(file.path(output_dir, "Labeling_vs_normExpression_actin-cytoskeletal-labels1.pdf"), plot = p_fc, width = 12, height = 12)
 ```
 
 

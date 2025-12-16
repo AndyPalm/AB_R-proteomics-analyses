@@ -34,7 +34,7 @@ p_fc <- ggplot(df_combined_fc, aes(x = expr_log2FC, y = log2FC)) +
   theme_bw() +
   labs(
     title = "Labeling vs. Expression Changes (DF vs UF)",
-    subtitle = "",
+    subtitle = "Labeled proteins are some related to actin polymerization/cytoskeletal dynamics",
     x = "Expression Log2(Fold Change)",
     y = "Labeling Log2(Fold Change)"
   )
