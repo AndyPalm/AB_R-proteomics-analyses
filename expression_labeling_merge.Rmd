@@ -34,7 +34,7 @@ df2.protein <- read.csv(file.path(exp2_dir, "327-normalized_top4-features_protei
 
 # 3. Define target proteins for highlighting in plots
 highlight_targets <- TRUE
-target_file_path <- here::here("data", "target_proteins.csv")
+target_file_path <- here::here("data", "target_proteins_JJMack.csv")
 ```
 
 Merge based on "ProteinID" aka Uniprot Accession
@@ -47,7 +47,7 @@ denom_state <- "UF"
 num_state   <- "DF"
 
 # 2. Filter Experiment 1 (Treatments), hardcoding the ALOD4/OlyA mixed comparisons
-df1_clean <- df1.comparison %>% mutate(Condition = case_when(Label == "ALOD4UF_vs_ALOD4DF" ~ "ALOD4", Label == "OlyAUF_vs_OlyADF" ~ "OlyA", Label == "OlyAUF_vs_ALOD4DF" ~ "OlyA vs ALOD4", Label == "ALOD4UF_vs_OlyADF" ~ "ALOD4 vs OlyA", TRUE ~ NA_character_)) %>% filter(!is.na(Condition)) %>% select(Protein, Condition, log2FC, pvalue, adj.pvalue)
+df1_clean <- df1.comparison %>% mutate(Condition = case_when(Label == "ALOD4DF_vs_ALOD4UF" ~ "ALOD4_DF-vs-UF", Label == "OlyADF_vs_OlyAUF" ~ "OlyA_DF-vs-UF", Label == "OlyADF_vs_ALOD4UF" ~ "OlyA-DF vs ALOD4-UF", Label == "ALOD4DF_vs_OlyAUF" ~ "ALOD4-DF vs OlyA-UF", TRUE ~ NA_character_)) %>% filter(!is.na(Condition)) %>% select(Protein, Condition, log2FC, pvalue, adj.pvalue)
 
 # 3. Filter Experiment 2 (Expression)
 df2_clean <- df2.comparison %>%
@@ -88,7 +88,7 @@ source(here::here("src", "plot_ancova_waterfall.R"))
 ```
 
 ```{r}
-ggsave(file.path(output_dir, "HAEC_expression-labeling_ANCOVA-scatter_296-ALOD4-enriched-labels.pdf"), plot = p_scatter, width = 6, height = 8)
+ggsave(file.path(output_dir, "HAEC_expression-labeling_ANCOVA-scatter_JJMack-labels.pdf"), plot = p_scatter, width = 6, height = 8)
 ggsave(file.path(output_dir, "ANCOVA_Waterfall.pdf"), plot = p_water, width = 10, height = 6)
 ```
 
