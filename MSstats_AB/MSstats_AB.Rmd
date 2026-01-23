@@ -196,6 +196,36 @@ write.csv(summarized_data$FeatureLevelData, file.path(export_dir, "339B-top4-fea
 write.csv(summarized_data$ProteinLevelData, file.path(export_dir, "339B-top4-features_protein-level-data_impute.csv"), row.names = FALSE)
 ```
 
+##extracting infinite foldchanges from protein-level dataframe
+```{r}
+protein_level_df <- read.csv("C:/Users/andbp/Documents/R_data/R_local/AP2-296/data/derived/296-top4-features_protein-level-data_impute.csv")
+
+# 1. Identify the target proteins (Same logic as before)
+target_proteins <- protein_level_df %>%
+  group_by(Protein) %>%
+  summarise(
+    count_OlyA = sum(str_detect(SUBJECT, "OlyA")),
+    count_ALOD4 = sum(str_detect(SUBJECT, "ALOD4"))
+  ) %>%
+  filter(
+    count_OlyA == 0,       # 0 detections in OlyA
+    count_ALOD4 >= 2       # >= 2 detections in ALOD4
+  ) %>%
+  pull(Protein)
+
+# 2. Filter original df for the Proteins AND the specific ALOD4 rows
+extracted_df <- protein_level_df %>%
+  filter(
+    Protein %in% target_proteins,    # Keep only the interesting proteins
+    str_detect(SUBJECT, "ALOD4")     # Keep only rows where Subject is ALOD4-#
+  )
+write.csv(extracted_df, "C:/Users/andbp/Documents/R_data/R_local/AP2-296/data/derived/Inf-foldchanges_extracted_df.csv", row.names=FALSE)
+```
+
+
+
+
+
 Redoing pvalue adjustment - removing NA values for pvalue/SE
 ```{r}
 res <- model_results$ComparisonResult %>% as_tibble()

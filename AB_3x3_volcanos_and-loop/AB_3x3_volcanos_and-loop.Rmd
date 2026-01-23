@@ -135,9 +135,7 @@ ggsave("ALOD4-UF-vs-DF_.png", width = 6, height = 4, dpi=300)
 write.csv(results, file="AP2-296_search5_no-norm_ALOD4-DOWN_OlyA-UP_results.csv",row.names = F)
 ```
 
-
-
-Loop attempt
+Loop
 ```{r}
 setwd("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/AP2-339B_reruns_MSstats_top4_impute/transformed_data_for_plotting")
 csv_files <- list.files(pattern = "\\.csv$", full.names = FALSE)

@@ -24,7 +24,7 @@ plot_top4_features <- function(data, gene_name, output_dir) {
   
   # 3. Fix Factor Levels
   plot_data <- plot_data %>%
-    dplyr::mutate(GROUP = fct_relevel(GROUP, "Ctx", "ALOD4", "OlyA", "control")) %>% 
+    dplyr::mutate(GROUP = fct_relevel(GROUP, "ALOD4DF","OlyADF","ALOD4UF","OlyAUF","DF","UF")) %>% 
     dplyr::arrange(GROUP, SUBJECT) %>%
     dplyr::mutate(SUBJECT = factor(SUBJECT, levels = unique(SUBJECT)))
   
@@ -48,7 +48,7 @@ plot_top4_features <- function(data, gene_name, output_dir) {
       width = 0.35
     ) +
     
-    # Zoom Y-axis if desired
+    # Zoom Y-axis
     #coord_cartesian(ylim = c(19, 29)) +
     
     # Aesthetics

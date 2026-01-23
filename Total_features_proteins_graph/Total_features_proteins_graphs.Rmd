@@ -1,0 +1,369 @@
+---
+title: "Total_features_proteins_graph"
+output: html_document
+date: "2026-01-16"
+---
+
+Extract feature-level data for specific proteins from DIA-NN, the MSstats.csv output, and graph the intensities.
+```{r}
+box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
+ref_dir  <- file.path(box_root, "Reference_dbs")
+exp1_dir <- file.path(box_root, "AP2-296_A431-3probe", "01_Input_Search_Results")
+parquet_files <- file.path(box_root, "AP2-296_A431-3probe", "02_R_Intermediates")
+output_dir <- file.path(box_root, "POCA2", "03_graphs_plots")
+if (!dir.exists(output_dir)) {dir.create(output_dir, recursive = TRUE)
+}
+library(tidyverse)
+library(pbapply)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(janitor)
+library(here)
+library(arrow)
+library(Hmisc)
+library(beeswarm)
+library(ggbeeswarm)
+```
+
+```{r}
+features <- file.path(exp1_dir, "296-top4-features_feature-level-data_impute.csv")
+features_pq  <- file.path(parquet_files, "296-top4-features_feature-level-data_impute.parquet")
+
+# Conditional Logic: Only convert if the parquet file doesn't already exist
+if (!file.exists(features_pq)) {
+  temp_df <- arrow::read_csv_arrow(features) 
+  arrow::write_parquet(temp_df, features_pq)
+  rm(temp_df)
+  gc() 
+  message("Conversion complete.")
+} else {
+  message("Parquet file found. Loading cached data.")
+}
+
+exp1.features <- arrow::read_parquet(features_pq)
+
+# 2. load UniProt accession <-> Gene mapping file and apply to features
+df.labels <- read_excel(file.path(ref_dir, "uniprot_hs_29may25.xlsx"))
+lookup <- df.labels %>% select(ProteinID, Gene) # Tidyverse style selection
+exp1.features <- exp1.features %>%
+  left_join(lookup, by = c("PROTEIN" = "ProteinID")) %>%
+  relocate(Gene, .after = PROTEIN) # Move Gene column to the front for easier viewing
+
+# Verify the merge
+head(exp1.features,5)
+```
+
+
+```{r}
+# 3. load protein-level data
+protein <- file.path(exp1_dir, "296-top4-features_protein-level-data_impute.csv")
+protein_pq  <- file.path(parquet_files, "296-top4-protein-level-data_impute.parquet")
+
+# Conditional Logic: Only convert if the parquet file doesn't already exist
+if (!file.exists(protein_pq)) {
+  temp_df <- arrow::read_csv_arrow(protein) 
+  arrow::write_parquet(temp_df, protein_pq)
+  rm(temp_df)
+  gc() 
+  message("Conversion complete.")
+} else {
+  message("Parquet file found. Loading cached data.")
+}
+
+exp1.proteins <- arrow::read_parquet(protein_pq)
+
+# Verify the merge
+head(exp1.proteins,5)
+```
+
+```{r}
+all_features <- file.path(exp1_dir, "296_277-296-DDA-speclib_DIA-type_msstats.csv")
+all_features_pq  <- file.path(parquet_files, "296_277-296-DDA-speclib_DIA-type_msstats.parquet")
+
+# Conditional Logic: Only convert if the parquet file doesn't already exist
+if (!file.exists(all_features_pq)) {
+  temp_df <- arrow::read_csv_arrow(all_features) 
+  arrow::write_parquet(temp_df, all_features_pq)
+  rm(temp_df)
+  gc() 
+  message("Conversion complete.")
+} else {
+  message("Parquet file found. Loading cached data.")
+}
+
+exp1.all_features <- arrow::read_parquet(all_features_pq)
+exp1.all_features <- exp1.all_features %>%
+  rename(PROTEIN = ProteinName)
+
+# 2. load UniProt accession <-> Gene mapping file and apply to features
+df.labels <- read_excel(file.path(ref_dir, "uniprot_hs_29may25.xlsx"))
+lookup <- df.labels %>% select(ProteinID, Gene) # Tidyverse style selection
+exp1.all_features <- exp1.all_features %>%
+  left_join(lookup, by = c("PROTEIN" = "ProteinID")) %>%
+  relocate(Gene, .after = PROTEIN) # Move Gene column to the front for easier viewing
+
+# Verify the merge
+head(exp1.all_features,5)
+```
+###identifying censoring cutoff, filtering input features from msstats.csv, and plotting
+```{r}
+library(tidyverse)
+library(ggbeeswarm)
+
+# --- CONFIGURATION: SET YOUR ORDER HERE ---
+desired_order <- c("control", "Ctx", "ALOD4", "OlyA")
+
+# --- STEP 1: Determine the Intensity Cutoff ---
+# Since censored values are NA, the threshold is the minimum observed value 
+# in the quality-controlled file (exp1.features).
+# Note: exp1.features uses "INTENSITY" (all caps)
+intensity_cutoff <- min(exp1.features$INTENSITY, na.rm = TRUE)
+
+print(paste("Filtering exp1.all_features using cutoff:", intensity_cutoff))
+
+# --- STEP 2: Process Data (Filter & Parse Unique Peptides) ---
+counts_summary <- exp1.all_features %>%
+  
+  # 1. Apply Cutoff
+  # Note: exp1.all_features uses "Intensity" (Title Case)
+  filter(!is.na(Intensity), Intensity >= intensity_cutoff) %>%
+  
+  # 2. Parse Unique Peptides
+  # We identify a unique peptide by its Protein + Start + End position.
+  # distinct() removes duplicates (e.g., different charge states or ions).
+  distinct(Condition, BioReplicate, PROTEIN, Protein.Start, Protein.End) %>%
+  
+  # 3. Count unique peptides per replicate
+  group_by(Condition, BioReplicate) %>%
+  summarise(
+    unique_peptides = n(), 
+    .groups = "drop"
+  ) %>%
+  
+  # 4. Apply Factor Order
+  mutate(Condition = factor(Condition, levels = desired_order))
+
+print("Summary of Unique Peptide Counts:")
+print(counts_summary)
+
+# --- STEP 3: Generate Graph ---
+ggplot(counts_summary, aes(x = Condition, y = unique_peptides)) +
+  
+  # Bar layer (Mean)
+  stat_summary(geom = "bar", fun = mean, aes(fill = Condition), 
+               alpha = 0.6, color = "black", width = 0.7) +
+  
+  # Error bar layer (+/- 1 SD)
+  stat_summary(geom = "errorbar", fun.data = mean_sdl, 
+               fun.args = list(mult = 1), width = 0.2, linewidth = 0.8) +
+  
+  # Points layer (Individual Replicates)
+  ggbeeswarm::geom_quasirandom(
+    shape = 1, 
+    size = 1.5, 
+    color = "black", 
+    stroke = 1, 
+    width = 0.35
+  ) +
+  
+  # Aesthetics
+  theme_bw() +
+  labs(
+    title = "Unique Peptide Count per Condition",
+    subtitle = paste("Filtered by Intensity >", round(intensity_cutoff, 1)),
+    y = "Unique Peptides",
+    x = "Condition"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  expand_limits(y = 0)
+```
+
+
+##plotting unique peptides from quantified feature-level data (already filtered for topN from msstats)
+```{r}
+# 1. Set the order of the bars
+desired_order <- c("Ctx", "ALOD4", "OlyA", "control")
+
+# 2. Set the colors for each group
+group_colors <- c(
+  "Ctx"     = "#9e8599",
+  "ALOD4"   = "#cf6a29",
+  "OlyA"    = "#036a38",
+  "control" = "#939598" 
+)
+
+# 3. Set Manual Y-Axis Range
+# Set values here (e.g., 0, 15000). Set to NA to let R decide automatically.
+y_axis_min <- 3500
+y_axis_max <- 6500 
+
+# --- STEP 1: FIX THE EMPTY COLUMN NAME ---
+colnames(exp1.features)[colnames(exp1.features) == ""] <- "Index"
+
+# --- STEP 2: Process Data & Clean Peptide Strings ---
+clean_data <- exp1.features %>%
+  filter(censored == FALSE, remove == FALSE) %>%
+  mutate(
+    clean_peptide = str_remove(PEPTIDE, "_\\d+$") 
+  )
+
+# --- STEP 3: Calculate Counts & SET FACTOR ORDER ---
+counts_summary <- clean_data %>%
+  group_by(GROUP, SUBJECT) %>%
+  summarise(
+    unique_peptides = n_distinct(clean_peptide),
+    .groups = "drop"
+  ) %>%
+  mutate(GROUP = factor(GROUP, levels = desired_order))
+
+# --- STEP 4: Generate Graph ---
+pep_plot <- ggplot(counts_summary, aes(x = GROUP, y = unique_peptides)) +
+  
+  # Bar layer (Mean)
+  stat_summary(geom = "bar", fun = mean, aes(fill = GROUP), 
+               alpha = 0.6, color = "black", width = 0.7) +
+  
+  # Error bar layer (+/- 1 SD)
+  stat_summary(geom = "errorbar", fun.data = mean_sdl, 
+               fun.args = list(mult = 1), width = 0.2, linewidth = 0.8) +
+  
+  # Points layer
+  ggbeeswarm::geom_quasirandom(
+    shape = 1, 
+    size = 1.5, 
+    color = "black", 
+    stroke = 1, 
+    width = 0.35
+  ) +
+  
+  # Apply Custom Colors
+  scale_fill_manual(values = group_colors) +
+  
+  # *** NEW: Manual Y-Axis Control ***
+  # This uses the variables set in the configuration section above
+  coord_cartesian(ylim = c(y_axis_min, y_axis_max)) +
+
+  # Aesthetics
+  theme_bw() +
+  labs(
+    title = "Unique Peptide Count per Group",
+    subtitle = "Bar = Mean; Error Bar = +/- 1 SD; Points = Individual Replicates",
+    y = "Unique Peptides",
+    x = "Group"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none", 
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+print(pep_plot)
+```
+
+plotting all unique features
+```{r}
+library(tidyverse)
+library(ggbeeswarm)
+
+# --- CONFIGURATION: SET YOUR ORDER, COLORS & AXIS HERE ---
+
+# 1. Set the order of the bars
+desired_order <- c("Ctx", "ALOD4", "OlyA", "control")
+
+# 2. Set the colors for each group
+group_colors <- c(
+  "Ctx"     = "#9e8599",
+  "ALOD4"   = "#cf6a29",
+  "OlyA"    = "#036a38",
+  "control" = "#939598" 
+)
+
+# 3. Set Manual Y-Axis Range
+# Set values here (e.g., 0, 15000). Set to NA to let R decide automatically.
+y_axis_min <- 70000
+y_axis_max <- 160000  # Change this to a number (e.g., 20000) if you need a specific max
+
+# --- STEP 1: Determine the Intensity Cutoff ---
+# Calculate the minimum valid intensity from the QC file
+intensity_cutoff <- min(exp1.features$INTENSITY, na.rm = TRUE)
+
+print(paste("Filtering exp1.all_features using cutoff:", intensity_cutoff))
+
+# --- STEP 2: Process Data & Count Unique Features ---
+counts_features <- exp1.all_features %>%
+  
+  # 1. Apply Intensity Cutoff
+  filter(!is.na(Intensity), Intensity >= intensity_cutoff) %>%
+  
+  # 2. Define Unique Features
+  # A feature is defined by the Peptide Identity + Charge + Specific Fragment Ion
+  distinct(Condition, BioReplicate, PROTEIN, Protein.Start, Protein.End, PrecursorCharge, FragmentIon) %>%
+  
+  # 3. Count unique features per replicate
+  group_by(Condition, BioReplicate) %>%
+  summarise(
+    unique_features = n(), 
+    .groups = "drop"
+  ) %>%
+  
+  # 4. Apply Factor Order
+  mutate(Condition = factor(Condition, levels = desired_order))
+
+print("Summary of Unique Feature Counts:")
+print(counts_features)
+
+# --- STEP 3: Generate Graph ---
+feat_plot <- ggplot(counts_features, aes(x = Condition, y = unique_features)) +
+  
+  # Bar layer (Mean)
+  stat_summary(geom = "bar", fun = mean, aes(fill = Condition), 
+               alpha = 0.6, color = "black", width = 0.7) +
+  
+  # Error bar layer (+/- 1 SD)
+  stat_summary(geom = "errorbar", fun.data = mean_sdl, 
+               fun.args = list(mult = 1), width = 0.2, linewidth = 0.8) +
+  
+  # Points layer (Individual Replicates)
+  ggbeeswarm::geom_quasirandom(
+    shape = 1, 
+    size = 1.5, 
+    color = "black", 
+    stroke = 1, 
+    width = 0.35
+  ) +
+  
+  # *** NEW: Apply Custom Colors ***
+  scale_fill_manual(values = group_colors) +
+  
+  # *** NEW: Manual Y-Axis Control ***
+  coord_cartesian(ylim = c(y_axis_min, y_axis_max)) +
+  
+  # Aesthetics
+  theme_bw() +
+  labs(
+    title = "Unique Feature Count per Condition",
+    subtitle = paste("Feature = Peptide + Charge + Fragment Ion | Cutoff >", round(intensity_cutoff, 1)),
+    y = "Unique Features",
+    x = "Condition"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(feat_plot)
+```
+
+```{r}
+ggsave(file.path(output_dir, "AP2-296_unique-features.pdf"), feat_plot, width = 4, height = 6)
+ggsave(file.path(output_dir, "AP2-296_unique-peptides.pdf"), pep_plot, width = 4, height = 6)
+```
+
