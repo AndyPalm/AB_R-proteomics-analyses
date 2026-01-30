@@ -1,5 +1,3 @@
-# Proteogenomic Integration Pipeline (RNA-seq x Proteomics)
-
 # Differential Expression (RNA-seq) & Quantitative Proteomics (DIA-LFQ)  
 **Analysis:** Global Z-score differences and Robust Linear Regression for Discordance Analysis
 
