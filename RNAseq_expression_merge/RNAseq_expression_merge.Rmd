@@ -5,142 +5,138 @@ date: "2026-01-16"
 ---
 
 ```{r}
-box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
-ref_dir  <- file.path(box_root, "Reference_dbs")
-exp_dir <- file.path(box_root, "AP2-327_HAEC-expression")
-parquet_files <- file.path(box_root, "AP2-327_HAEC-expression", "02_R_Intermediates")
-output_dir <- file.path(box_root, "POCA2", "03_graphs_plots")
-if (!dir.exists(output_dir)) {dir.create(output_dir, recursive = TRUE)
-}
+# --- 1. LIBRARIES ---
 library(MASS, exclude = "select")
-library(dplyr)
-library(tidyr)
-library(tidyverse)
-library(pbapply)
-library(ggrepel)
-library(RColorBrewer)
+library(tidyverse) 
+library(arrow)
 library(readxl)
 library(janitor)
-library(here)
-library(arrow)
-library(Hmisc)
-library(beeswarm)
-library(ggbeeswarm)
-library(ggplot2)
 library(ggrepel)
-library(stringr)
+library(ggbeeswarm)
 library(ggpubr)
+library(pbapply)
+
+# --- 2. GLOBAL PATHS & CONSTANTS ---
+box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
+ref_dir  <- file.path(box_root, "Reference_dbs")
+exp_dir  <- file.path(box_root, "AP2-327_HAEC-expression")
+pq_dir   <- file.path(exp_dir, "02_R_Intermediates")
+output_dir  <- file.path(box_root, "POCA2", "03_graphs_plots")
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 ```
 
 
 ```{r}
-cond1 <- "DF"  # Define your Experimental Condition                           - UP
-cond2 <- "UF"  # Define your Control Condition                                - DOWN
+cond1 <- "DF" # Experimental (UP)
+cond2 <- "UF" # Control (DOWN)
+
+# Colors
+c1_color <- "#E41A1C" # Red
+c2_color <- "#377EB8" # Blue
+c_grey   <- "grey80"
+
+# Thresholds
+LOD_THRESH <- 0.1
+REG_THRESH <- 0.5
+DISC_SIGMA <- 3
+
+#Protein/gene labels
+plot_labels <- c("WWC2","ICAM1","LIPH","LIPA","PIEZO1","NOS3","GPC1","IGTB1","ITGA1","ADAM10","NOTCH1","SDC4","SDC1","CDH5","CDH1","BMPR1A","YAP1","BST2","IGSF8","ANGPT2","OSBPL8","VWF","BMX","STK38","CYRIA","DNMT1","ENG","HMOX1","FLT1","NRP2","HPSE","BACH2","GLI2","GPIHBP1","ADAM12","ADAM17","ROBO4","FGB","S100A9","DAB2IP","PGF","FLI1","LEFTY2","APLNR")
+```
+
+```{r}
+# --- HELPER FUNCTION: CSV to Parquet ---
+load_or_convert <- function(csv_path, pq_path) {
+  if (!file.exists(pq_path)) {
+    message("Converting: ", basename(csv_path))
+    temp <- arrow::read_csv_arrow(csv_path)
+    arrow::write_parquet(temp, pq_path)
+    return(temp)
+  } else {
+    message("Loading cached: ", basename(pq_path))
+    return(arrow::read_parquet(pq_path))
+  }
+}
+
+# Load Labels
 df.labels <- read_excel(file.path(ref_dir, "uniprot_hs_genes_PTM-DBs_17jan26.xlsx"))
-head(df.labels,2) ###check column header for first row (UniProt accession ID) and change if needed
-```
 
+# Load RNA
+rna_pq <- file.path(pq_dir, "SGH-JJM_RNAseq_UF-vs-DF.parquet")
+exp.rna_input <- load_or_convert(file.path(exp_dir, "SGH-JJM_RNAseq_UF-vs-DF.csv"), rna_pq)
 
-```{r}
-rna_input <- file.path(exp_dir, "SGH-JJM_RNAseq_UF-vs-DF.csv")
-rna_input_pq  <- file.path(parquet_files, "SGH-JJM_RNAseq_UF-vs-DF.parquet")
-protein_input <- file.path(exp_dir, "01_Input_Search_Results", "327-normalized_top4-features_protein-level-data_impute.csv")
-protein_inpuut_pq  <- file.path(parquet_files, "327-normalized_top4-features_protein-level-data_impute.parquet")
-
-rna_input_pq  <- file.path(parquet_files, "SGH-JJM_RNAseq_UF-vs-DF.parquet")
-if (!file.exists(rna_input_pq)) {
-  temp_df <- arrow::read_csv_arrow(rna_input) 
-  arrow::write_parquet(temp_df, rna_input_pq)
-  rm(temp_df)
-  gc() 
-  message("Conversion complete.")
-} else {
-  message("Parquet file found. Loading cached data.")
-}
-
-exp.rna_input <- arrow::read_parquet(rna_input_pq)
-exp.rna_long <- exp.rna_input %>% ###pivoting to long data format to be consistent with protein-level data from MSstats
-  pivot_longer(cols = -Gene, names_to = "Sample", values_to = "Expression") %>%
-  mutate(Condition = ifelse(grepl("DF", Sample), "DF", "UF")) %>%
-  filter(Expression > 0) %>% 
-  mutate(LogExpression = log2(Expression))
-
-
-protein_input_pq  <- file.path(parquet_files, "327-top4-features_protein-level-data_impute.parquet")
-if (!file.exists(protein_input_pq)) {
-  temp_df <- arrow::read_csv_arrow(protein_input) 
-  arrow::write_parquet(temp_df, protein_input_pq)
-  rm(temp_df)
-  gc() 
-  message("Conversion complete.")
-} else {
-  message("Parquet file found. Loading cached data.")
-}
-
-exp.protein_input <- arrow::read_parquet(protein_input_pq)
+# Load Protein
+prot_pq <- file.path(pq_dir, "327-top4-features_protein-level-data_impute.parquet")
+exp.protein_input <- load_or_convert(
+  file.path(exp_dir, "01_Input_Search_Results", "327-normalized_top4-features_protein-level-data_impute.csv"), 
+  prot_pq
+)
 colnames(exp.protein_input)[colnames(exp.protein_input) == ""] <- "RowID"
 ```
 
-
 ```{r}
-LOD_THRESHOLD <- 0.1 
+# --- RNA PROCESSING ---
+# 1. Pivot Long
+exp.rna_long <- exp.rna_input %>%
+  pivot_longer(cols = -Gene, names_to = "Sample", values_to = "Expression") %>%
+  mutate(Condition = ifelse(grepl(cond1, Sample), cond1, cond2)) %>%
+  filter(Expression > 0) %>% 
+  mutate(LogExpression = log2(Expression))
 
-stats.rna.all <- exp.rna_long %>%
+# 2. Calculate Stats & Categorize (Robust Logic)
+stats.rna.clean <- exp.rna_long %>%
   group_by(Gene) %>%
   summarise(
-    # 1. Calculate Means (Critical for the flag)
     Mean_cond1 = mean(Expression[Condition == cond1], na.rm = TRUE),
     Mean_cond2 = mean(Expression[Condition == cond2], na.rm = TRUE),
     
-    # 2. Standard Stats (cond1 - cond2)
+    # Logic Counts
+    n_Reg_Cond1 = sum(Expression[Condition == cond1] > REG_THRESH, na.rm = TRUE),
+    n_Reg_Cond2 = sum(Expression[Condition == cond2] > REG_THRESH, na.rm = TRUE),
+    n_Det_Cond1 = sum(Expression[Condition == cond1] > LOD_THRESH, na.rm = TRUE),
+    n_Det_Cond2 = sum(Expression[Condition == cond2] > LOD_THRESH, na.rm = TRUE),
+    
+    # Stats
     RNA_Log2FC = mean(LogExpression[Condition == cond1], na.rm = TRUE) - 
                  mean(LogExpression[Condition == cond2], na.rm = TRUE),
-    
-    P_Value_RNA = t.test(LogExpression ~ Condition)$p.value,
+    P_Value = t.test(LogExpression ~ Condition)$p.value,
     .groups = 'drop'
   ) %>%
-  mutate(Adj_P_Value_RNA = p.adjust(P_Value_RNA, method = "BH")) %>%
-  
-  # --- THE FLAG: Create the Categories ---
   mutate(
-    Gaussian = if_else(Mean_cond1 > LOD_THRESHOLD & Mean_cond2 > LOD_THRESHOLD, TRUE, FALSE),
+    Adj_P_Value = p.adjust(P_Value, method = "BH"),
     
-    # Detailed category with dynamic naming
+    # Classification
+    Gaussian = if_else(n_Reg_Cond1 >= 2 & n_Reg_Cond2 >= 2, TRUE, FALSE),
+    Flag_Binary_Cond1 = (n_Det_Cond1 >= 2 & n_Det_Cond2 == 0),
+    Flag_Binary_Cond2 = (n_Det_Cond1 == 0 & n_Det_Cond2 >= 2),
+    
     Category = case_when(
-      Gaussian == TRUE ~ "Quantitative",
-      Mean_cond1 > LOD_THRESHOLD & Mean_cond2 <= LOD_THRESHOLD ~ paste("Only in", cond1),
-      Mean_cond1 <= LOD_THRESHOLD & Mean_cond2 > LOD_THRESHOLD ~ paste("Only in", cond2),
+      Gaussian ~ "Quantitative",
+      Flag_Binary_Cond1 ~ paste("Only in", cond1),
+      Flag_Binary_Cond2 ~ paste("Only in", cond2),
       TRUE ~ "Noise"
     )
-  )
+  ) %>%
+  filter(Category != "Noise") # Filter immediately
 
-# QC: Check the distribution
-table(stats.rna.all$Category)
-```
-
-
-```{r}
-stats.rna.quant <- stats.rna.all %>% 
-  filter(Category == "Quantitative")
-
-rna_histo <- ggplot(stats.rna.quant, aes(x = RNA_Log2FC)) +
-  geom_histogram(binwidth = 0.2, fill = "#a6bddb", color = "black", alpha = 0.9) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "red", size = 1) +
+# QC Plot
+stats.rna.clean %>%
+  filter(Category == "Quantitative") %>%
+  ggplot(aes(x = RNA_Log2FC)) +
+  geom_histogram(binwidth = 0.2, fill = "#a6bddb", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
   theme_minimal() +
-  labs(
-    title = paste("Distribution of RNA Log2 Fold Changes (", cond1, " vs ", cond2, ")", sep=""),
-    subtitle = "CPM > 0.1",
-    x = "Log2 Fold Change",
-    y = "Number of Genes"
-  )
-print(rna_histo)
+  labs(title = "RNA Distribution (Quantitative)", subtitle = paste0(cond1, " vs ", cond2))
 ```
-
-Calculate protein foldchanges & stats
+PROTEIN PROCESSING
 ```{r}
-# 1. Summarize counts (using dynamic variables)
-protein_counts <- exp.protein_input %>%
-  mutate(Condition = ifelse(grepl(cond1, GROUP), cond1, cond2)) %>%
+# 1. Condition Tagging
+prot_data <- exp.protein_input %>%
+  mutate(Condition = ifelse(grepl(cond1, GROUP), cond1, cond2))
+
+# 2. Counts per group
+prot_counts <- prot_data %>%
   group_by(Protein) %>%
   summarise(
     n_cond1 = sum(Condition == cond1),
@@ -148,446 +144,200 @@ protein_counts <- exp.protein_input %>%
     .groups = 'drop'
   )
 
-# 2. Create the "Quantitative" dataset (T-Test pile)
-# Criteria: >= 2 values in BOTH groups
-valid_proteins_list <- protein_counts %>%
-  filter(n_cond1 >= 2 & n_cond2 >= 2) %>%
-  pull(Protein)
+# 3. Quantitative Stats (T-Test)
+valid_prots <- prot_counts %>% filter(n_cond1 >= 2 & n_cond2 >= 2) %>% pull(Protein)
 
-stats.protein <- exp.protein_input %>%
-  filter(Protein %in% valid_proteins_list) %>%
-  mutate(Condition = ifelse(grepl(cond1, GROUP), cond1, cond2)) %>%
+stats.protein.clean <- prot_data %>%
+  filter(Protein %in% valid_prots) %>%
   group_by(Protein) %>%
   summarise(
-    # Log2 Fold Change (cond1 - cond2)
     Protein_Log2FC = mean(LogIntensities[Condition == cond1], na.rm = TRUE) - 
                      mean(LogIntensities[Condition == cond2], na.rm = TRUE),
-    
-    # T-test
     P_Value = t.test(LogIntensities ~ Condition)$p.value,
     .groups = 'drop'
   ) %>%
-  mutate(Adj_P_Value = p.adjust(P_Value, method = "BH"))
+  mutate(Adj_P_Value = p.adjust(P_Value, method = "BH")) %>%
+  # Annotation Join
+  left_join(df.labels %>% select(Entry, `Gene Names (primary)`), by = c("Protein" = "Entry")) %>%
+  filter(!is.na(`Gene Names (primary)`))
 
-# 3. Create "Qualitative" Lists ("only" in cond1 or cond2)
+# 4. Exclusive Lists (for Singletons)
+list_only_c1 <- prot_counts %>% filter(n_cond1 >= 2 & n_cond2 < 2) %>% pull(Protein)
+list_only_c2 <- prot_counts %>% filter(n_cond2 >= 2 & n_cond1 < 2) %>% pull(Protein)
 
-# Proteins Only in cond2
-only_cond2_list <- protein_counts %>%
-  filter(n_cond2 >= 2 & n_cond1 < 2) %>%
-  pull(Protein)
+protein_only_cond1 <- prot_data %>% filter(Protein %in% list_only_c1)
+protein_only_cond2 <- prot_data %>% filter(Protein %in% list_only_c2)
 
-protein_only_cond2 <- exp.protein_input %>%
-  filter(Protein %in% only_cond2_list)
-
-# Proteins Only in cond1
-only_cond1_list <- protein_counts %>%
-  filter(n_cond1 >= 2 & n_cond2 < 2) %>%
-  pull(Protein)
-
-protein_only_cond1 <- exp.protein_input %>%
-  filter(Protein %in% only_cond1_list)
-
-# 4. QC Histogram
-protein_histo <- ggplot(stats.protein, aes(x = Protein_Log2FC)) +
-  geom_histogram(binwidth = 0.2, fill = "#69b3a2", color = "black", alpha = 0.9) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "red", size = 1) +
-  theme_minimal() +
-  labs(
-    title = paste("Distribution of Protein Log2 Fold Changes (", cond1, " vs ", cond2, ")", sep=""),
-    x = "Log2 Fold Change",
-    y = "Number of Proteins"
-  )
-print(protein_histo)
+print(paste("Quantitative Proteins:", nrow(stats.protein.clean)))
 ```
 
-Separate out the "islands" in the RNAseq data for separate analyses
+TIERED MERGE
 ```{r}
-# --- Define Thresholds ---
-LOD_THRESHOLD        <- 0.1  # For Binary "Presence" (0.1 CPM ≈ limit of detection)
-REGRESSION_THRESHOLD <- 0.5  # For Quantitative/Robust (0.5 CPM ≈ 10 reads)
+# Prepare Protein Data with Full Gene Names for synonym rescue
+stats.prot.enriched <- stats.protein.clean %>%
+  left_join(df.labels %>% select(Entry, `Gene Names`), by = c("Protein" = "Entry"))
 
-stats.rna.all <- exp.rna_long %>%
-  group_by(Gene) %>%
-  summarise(
-    # 1. Calculate Means (Preserving original columns for reference)
-    Mean_cond1 = mean(Expression[Condition == cond1], na.rm = TRUE),
-    Mean_cond2 = mean(Expression[Condition == cond2], na.rm = TRUE),
-    
-    # 2. Logic Counts (The new robust engine)
-    # How many reps pass the strict Regression threshold?
-    n_Reg_Cond1 = sum(Expression[Condition == cond1] > REGRESSION_THRESHOLD, na.rm = TRUE),
-    n_Reg_Cond2 = sum(Expression[Condition == cond2] > REGRESSION_THRESHOLD, na.rm = TRUE),
-    
-    # How many reps pass the loose Detection threshold?
-    n_Det_Cond1 = sum(Expression[Condition == cond1] > LOD_THRESHOLD, na.rm = TRUE),
-    n_Det_Cond2 = sum(Expression[Condition == cond2] > LOD_THRESHOLD, na.rm = TRUE),
-    
-    # 3. Standard Stats (cond1 - cond2)
-    RNA_Log2FC = mean(LogExpression[Condition == cond1], na.rm = TRUE) - 
-                 mean(LogExpression[Condition == cond2], na.rm = TRUE),
-    
-    P_Value_RNA = t.test(LogExpression ~ Condition)$p.value,
-    .groups = 'drop'
-  ) %>%
-  mutate(
-    Adj_P_Value_RNA = p.adjust(P_Value_RNA, method = "BH"),
-    
-    # --- HARMONIZED FLAGGING ---
-    
-    # 1. Regression Ready Flag (Replaces your old Gaussian logic)
-    # Rule: High quality signal (>0.5 CPM) in at least 2 replicates of BOTH conditions.
-    Gaussian = if_else(n_Reg_Cond1 >= 2 & n_Reg_Cond2 >= 2, TRUE, FALSE),
-    
-    # 2. Binary/Exclusive Flag (New helper for logic)
-    # Rule: Detected (>0.1 CPM) in one condition, absent/noise in the other
-    Flag_Binary_Cond1 = (n_Det_Cond1 >= 2 & n_Det_Cond2 == 0),
-    Flag_Binary_Cond2 = (n_Det_Cond1 == 0 & n_Det_Cond2 >= 2),
-    
-    # 3. Category (Preserves your downstream string dependencies)
-    Category = case_when(
-      Gaussian == TRUE ~ "Quantitative",
-      
-      # The "Only in" buckets (Binary or Low-Abundance Rescue)
-      Flag_Binary_Cond1 ~ paste("Only in", cond1),
-      Flag_Binary_Cond2 ~ paste("Only in", cond2),
-      
-      # Rescue: Consistent low signal (e.g. 0.4 vs 0) that fails Regression but passes Binary
-      # (This is implicitly covered above, but acting as a catch-all for messy low data)
-      TRUE ~ "Noise"
-    )
-  )
-
-# QC: Check how many genes fall into each bucket
-table(stats.rna.all$Category)
-
-# A. Filter RNA to remove Noise
-# This flows directly into your Big Merge
-stats.rna.clean <- stats.rna.all %>%
-  filter(Category != "Noise")
-
-# B. Summarize the "Qualitative" Protein lists to unique entries
-# (Your existing code for this section follows below unchanged)
-list_protein_cond1 <- protein_only_cond1 %>%
-  distinct(Protein, .keep_all = TRUE) %>%
-  left_join(df.labels, by = c("Protein" = "Entry")) %>% 
-  dplyr::select(Protein, `Gene Names (primary)`, Condition = GROUP)
-```
-
-
-Protein annotation and filtering
-```{r}
-# --- ANNOTATION & FILTERING ---
-
-# 1. Create a lightweight map (Protein -> Gene)
-# We select ONLY the essentials from df.labels to keep intermediate frames clean
-gene_map <- df.labels %>%
-  select(Entry, `Gene Names (primary)`)
-
-# 2. Merge this map onto the Protein Stats
-# Since gene_map is already stripped, stats.protein.annotated will be clean
-stats.protein.annotated <- stats.protein %>%
-  left_join(gene_map, by = c("Protein" = "Entry"))
-
-# 3. Filter and Final Select
-stats.protein.clean <- stats.protein.annotated %>%
-  filter(!is.na(`Gene Names (primary)`)) %>%
-  # Explicitly selecting only the requested columns
-  select(
-    Protein, 
-    `Gene Names (primary)`, 
-    Protein_Log2FC, 
-    Adj_P_Value
-  )
-
-# 4. Report & View
-print(paste("Proteins ready for Merge:", nrow(stats.protein.clean)))
-head(stats.protein.clean,5)
-```
-
-
-Big merge
-```{r}
-# --- STEP 1: PREPARATION ---
-stats.protein.enriched <- stats.protein.clean %>%
-  left_join(
-    df.labels %>% select(Entry, `Gene Names`, `Gene Names (primary)`), 
-    by = c("Protein" = "Entry")
-  ) %>%
-  # Coalesce: If 'Gene Names (primary)' was already there, ensure we have the best version
-  mutate(
-    `Gene Names (primary)` = coalesce(`Gene Names (primary).x`, `Gene Names (primary).y`)
-  ) %>%
-  select(-ends_with(".x"), -ends_with(".y"))
-
-
-# --- STEP 2: TIER 1 MERGE (The "Easy" Matches) ---
-# Exact match on the Primary Name
-match_tier1 <- stats.protein.enriched %>%
+# Tier 1: Primary Match
+match_tier1 <- stats.prot.enriched %>%
   inner_join(stats.rna.clean, by = c("Gene Names (primary)" = "Gene")) %>%
   mutate(Match_Type = "Primary")
 
-# Identify the orphans (Proteins that failed Tier 1)
-orphans_tier1 <- stats.protein.enriched %>%
+# Tier 2: Synonym Rescue
+orphans <- stats.prot.enriched %>%
   anti_join(stats.rna.clean, by = c("Gene Names (primary)" = "Gene"))
 
-print(paste("Matched in Tier 1:", nrow(match_tier1)))
-print(paste("Proceeding to Tier 2 (Rescue) with:", nrow(orphans_tier1), "orphans"))
-
-
-# --- STEP 3: TIER 2 MERGE (The "Synonym" Rescue) ---
-# We take the orphans and "explode" their synonym list to find a match
-match_tier2 <- orphans_tier1 %>%
-  # 1. Separate the 'Gene Names' string into multiple rows
-  # Separator handles semicolons OR spaces (common in UniProt)
+match_tier2 <- orphans %>%
   separate_rows(`Gene Names`, sep = "[;\\s]+") %>%
-  
-  # 2. Try to join these individual synonyms with the RNA data
   inner_join(stats.rna.clean, by = c("Gene Names" = "Gene")) %>%
-  
-  # 3. Cleanup: A protein might match multiple RNA synonyms. 
-  # We group by Protein and pick the 'best' match (e.g., highest RNA expression)
-  # or just the first valid one to avoid duplication.
   group_by(Protein) %>%
-  arrange(desc(abs(RNA_Log2FC))) %>% # Optional: Pick the RNA with strongest change
-  slice(1) %>%                       # Keep only 1 match per protein
+  arrange(desc(abs(RNA_Log2FC))) %>%
+  slice(1) %>%
   ungroup() %>%
-  
-  mutate(Match_Type = "Synonym Rescue") 
+  mutate(Match_Type = "Synonym Rescue")
 
-print(paste("Rescued in Tier 2:", nrow(match_tier2)))
+# Combine & Discordance Calc
+proteogenomics <- bind_rows(match_tier1, match_tier2)
 
+# Robust Linear Model
+model_robust <- rlm(Protein_Log2FC ~ RNA_Log2FC, data = proteogenomics, psi = psi.bisquare)
 
-# --- STEP 4: FINAL COMBINATION ---
-proteogenomics_tiered <- bind_rows(match_tier1, match_tier2) %>%
+proteogenomics_stats <- proteogenomics %>%
   mutate(
-    Discordance = Protein_Log2FC - RNA_Log2FC,
-    Is_Discordant = abs(Discordance) > 1
-  )
-
-# Report
-print(paste("Total Merged Pairs:", nrow(proteogenomics_tiered)))
-```
-
-Calculations
-```{r}
-DISCORDANCE_THRESH <- 3 ##Number of standard deviations away from the mean for significance
-
-# --- A. Robust Residuals ---
-# Fit the robust model (using Bisquare weighting as per literature)
-model_robust <- rlm(Protein_Log2FC ~ RNA_Log2FC, data = proteogenomics_tiered, psi = psi.bisquare)
-
-proteogenomics_stats <- proteogenomics_tiered %>%
-  mutate(
-    # 1. Regression Metrics
-    Regression_Fit = predict(model_robust),
-    
-    # CORRECTED LINE: Calculate Robust Z-scores manually
-    # Raw Residual / Robust Scale (Sigma)
     Studentized_Resid = residuals(model_robust) / model_robust$s,
-    
-    # Discordance Flag: Uses the defined threshold variable (> 3 sigma)
-    Is_Discordant_Resid = abs(Studentized_Resid) > DISCORDANCE_THRESH, 
-    
-    # 2. Z-Score Metrics (Global scaling approach)
+    Is_Discordant = abs(Studentized_Resid) > DISC_SIGMA,
     Z_Protein = as.numeric(scale(Protein_Log2FC)),
-    Z_RNA = as.numeric(scale(RNA_Log2FC)),
-    Discordance_Z = Z_Protein - Z_RNA,
-    
-    # Z-Score Flag
-    Is_Discordant_Z = abs(Discordance_Z) > DISCORDANCE_THRESH 
+    Z_RNA = as.numeric(scale(RNA_Log2FC))
   )
+
+print(paste("Total Pairs:", nrow(proteogenomics_stats)))
 ```
 
-#Discordance plot
+STUDENTIZWED RESIDUALS ANALYSIS (ROBUST LINEAR MODEL) AND VISUALIZATION
+M-weighting model reduces influence of outliers on fitted linear model. Useful for heteroscedastic datasets (where variance is not constant across all values - e.g., the variance is much higher for low-abundance transcripts)
 ```{r}
-library(ggplot2)
-library(ggrepel)
+plot_df <- proteogenomics_stats %>%
+  mutate(Color_Resid = case_when(
+    !Is_Discordant ~ "Concordant",
+    Protein_Log2FC > 0 ~ paste("High in", cond1),
+    TRUE ~ paste("High in", cond2)
+  ))
 
-# --- 1. SETTINGS & CUSTOMIZATION ---
-# Plot Boundaries
-XLIM <- c(-20, 20)
-YLIM <- c(-6, 6)
-Z_LIM <- c(-10, 10)
+reg_int <- coef(model_robust)[1]
+reg_slope <- coef(model_robust)[2]
+reg_sigma <- summary(model_robust)$sigma
 
-# Color Settings
-cond1_sig_color <- "#E41A1C"  # Red (e.g., High in DF)
-cond2_sig_color <- "#377EB8"  # Blue (e.g., High in UF)
-concordant_color <- "grey80"
+my_colors <- setNames(c(c_grey, c1_color, c2_color), 
+                      c("Concordant", paste("High in", cond1), paste("High in", cond2)))
 
-# --- 2. DATA PREP: COLORING & LABELS ---
+reg_slope <- coef(model_robust)[2]
+reg_int   <- coef(model_robust)[1]
 
-# We create the color categories based on the flags calculated in the previous step
-proteogenomics_plot_df <- proteogenomics_stats %>%
-  mutate(
-    # Coloring Logic (Resid)
-    Color_Resid = case_when(
-      Is_Discordant_Resid == FALSE ~ "Concordant",
-      Protein_Log2FC > 0 ~ paste("High in", cond1), 
-      Protein_Log2FC < 0 ~ paste("High in", cond2),
-      TRUE ~ "Concordant"
-    ),
-    
-    # Coloring Logic (Z-Score)
-    Color_Z = case_when(
-      Is_Discordant_Z == FALSE ~ "Concordant",
-      Z_Protein > Z_RNA ~ paste("High in", cond1), 
-      Z_Protein < Z_RNA ~ paste("High in", cond2),
-      TRUE ~ "Concordant"
-    )
-  )
+eq_label <- paste0(
+  "y = ", round(reg_slope, 2), "x ", 
+  ifelse(reg_int >= 0, "+ ", "- "), 
+  abs(round(reg_int, 2))
+)
 
-# Construct the Dynamic Color Mapping
-my_colors <- c("Concordant" = concordant_color)
-my_colors[paste("High in", cond1)] <- cond1_sig_color
-my_colors[paste("High in", cond2)] <- cond2_sig_color
-
-# Extract Regression Equation from the pre-calculated model
-reg_intercept <- coef(model_robust)[1]
-reg_slope     <- coef(model_robust)[2]
-reg_sigma     <- summary(model_robust)$sigma
-eq_label <- paste0("y = ", round(reg_slope, 2), "x ", 
-                   ifelse(reg_intercept >= 0, "+ ", "- "), abs(round(reg_intercept, 2)))
-
-
-# --- 3. PLOT A: REGRESSION RESIDUALS ---
-
-plot_resid <- ggplot(proteogenomics_plot_df, aes(x = RNA_Log2FC, y = Protein_Log2FC)) +
-  geom_hline(yintercept = 0, color = "black", size = 0.5) +
-  geom_vline(xintercept = 0, color = "black", size = 0.5) +
+ggplot(plot_df, aes(x = RNA_Log2FC, y = Protein_Log2FC)) +
+  # 1. Base Points
+  geom_point(aes(color = Color_Resid), alpha = 0.7) +
   
-  # Regression Lines
-  geom_abline(intercept = reg_intercept, slope = reg_slope, color = "black", size = 0.8) +
-  geom_abline(intercept = reg_intercept + (DISCORDANCE_THRESH * reg_sigma), slope = reg_slope, color = "black", linetype = "dashed", alpha = 0.6) +
-  geom_abline(intercept = reg_intercept - (DISCORDANCE_THRESH * reg_sigma), slope = reg_slope, color = "black", linetype = "dashed", alpha = 0.6) +
+  # 2. Regression Lines
+  geom_abline(slope = reg_slope, intercept = reg_int) +
+  geom_abline(slope = reg_slope, intercept = reg_int + (DISC_SIGMA * reg_sigma), linetype = 2) +
+  geom_abline(slope = reg_slope, intercept = reg_int - (DISC_SIGMA * reg_sigma), linetype = 2) +
   
-  # Points
-  geom_point(aes(color = Color_Resid), alpha = 0.7, size = 1.5) +
-  scale_color_manual(values = my_colors, name = "Protein Abundance") + 
+  # 3. OVERLAY: Black Circles for 'plot_labels'
+  geom_point(data = subset(plot_df, `Gene Names (primary)` %in% plot_labels),
+             shape = 1, size = 1.9, color = "black", stroke = 0.8) +
   
-  # Annotation
-  annotate("text", x = XLIM[1] + 5, y = YLIM[2] - 0.5, label = eq_label, 
-           fontface = "italic", hjust = 0, size = 4) +
-
-  # Labels (Uses the global DISCORDANCE_THRESH)
-  geom_text_repel(data = subset(proteogenomics_plot_df, abs(Studentized_Resid) > DISCORDANCE_THRESH),
-                  aes(label = `Gene Names (primary)`),
-                  max.overlaps = 70, size = 3, box.padding = 0.5) +
+  # 4. OVERLAY: Text Labels for 'plot_labels'
+  geom_text_repel(data = subset(plot_df, `Gene Names (primary)` %in% plot_labels),
+                  aes(label = `Gene Names (primary)`), 
+                  size = 4, fontface = "bold", box.padding = 0.5, max.overlaps = Inf) +
   
+  #5. Add equation of fitted linear model
+  annotate("text", x = 1, y = 3, label = eq_label, 
+           hjust = 0, size = 5, fontface = "italic") +
+  
+  scale_color_manual(values = my_colors) +
+  coord_cartesian(xlim = c(-3, 4), ylim = c(-3, 3)) + 
   theme_classic() +
-  coord_cartesian(xlim = XLIM, ylim = YLIM) +
-  theme(
-    panel.border = element_rect(colour = "black", fill = NA, size = 1),
-    axis.line = element_blank(),
-    legend.position = "right"
-  ) +
-  labs(title = "Analysis 1: Regression Residuals",
-       subtitle = paste("Dashed lines indicate +/-", DISCORDANCE_THRESH, "sigma"),
-       x = "RNA Log2 Fold Change", y = "Protein Log2 Fold Change")
-
-
-# --- 4. PLOT B: Z-SCORE ---
-
-plot_z <- ggplot(proteogenomics_plot_df, aes(x = Z_RNA, y = Z_Protein)) +
-  geom_hline(yintercept = 0, color = "black", size = 0.5) +
-  geom_vline(xintercept = 0, color = "black", size = 0.5) +
-  
-  # Diagonal Lines
-  geom_abline(intercept = 0, slope = 1, color = "black", size = 0.8) +
-  geom_abline(intercept = DISCORDANCE_THRESH, slope = 1, color = "black", linetype = "dashed", alpha = 0.6) +
-  geom_abline(intercept = -DISCORDANCE_THRESH, slope = 1, color = "black", linetype = "dashed", alpha = 0.6) +
-  
-  # Points
-  geom_point(aes(color = Color_Z), alpha = 0.7, size = 1.5) +
-  scale_color_manual(values = my_colors, name = "Discordance Direction") +
-  
-  # Labels (Uses the global DISCORDANCE_THRESH)
-  geom_text_repel(data = subset(proteogenomics_plot_df, abs(Discordance_Z) > DISCORDANCE_THRESH),
-                  aes(label = `Gene Names (primary)`),
-                  max.overlaps = 9, size = 3, box.padding = 0.5) +
-  
-  theme_classic() +
-  coord_fixed(ratio = 1, xlim = Z_LIM, ylim = Z_LIM) +
-  theme(
-    panel.border = element_rect(colour = "black", fill = NA, size = 1),
-    axis.line = element_blank(),
-    legend.position = "right"
-  ) +
-  labs(title = "Analysis 2: Z-Score Normalization",
-       subtitle = paste("Dashed lines indicate +/-", DISCORDANCE_THRESH, "SD difference"),
-       x = "RNA Z-Score", y = "Protein Z-Score")
-
-# Display
-print(plot_resid)
-print(plot_z)
+  labs(title = "Regression Residuals", subtitle = "")
 ```
 
-Singletons
+
 ```{r}
 library(dplyr)
 library(ggplot2)
 library(ggrepel)
 
 # --- 1. SETTINGS ---
-# Define the "Strip Ratio" globally to ensure identical thickness
-# Higher number = Thinner strips
 STRIP_RATIO <- 8  
 
 # --- 2. PREPARE DATA & CALCULATE GLOBAL LIMITS ---
 
-# Protein Data Prep
+# 1. Prepare Protein Data (Now aggregated by Protein to ensure single points)
 df_prot_c1 <- protein_only_cond1 %>%
   left_join(df.labels %>% select(Entry, `Gene Names (primary)`), by = c("Protein" = "Entry")) %>%
-  mutate(Label = coalesce(`Gene Names (primary)`, Protein), mean_intensity = LogIntensities)
+  mutate(Label = coalesce(`Gene Names (primary)`, Protein)) %>%
+  # AGGREGATION STEP: Group by Protein/Label and calculate mean
+  group_by(Protein, Label) %>%
+  summarize(mean_intensity = mean(LogIntensities, na.rm = TRUE), .groups = "drop")
 
 df_prot_c2 <- protein_only_cond2 %>%
   left_join(df.labels %>% select(Entry, `Gene Names (primary)`), by = c("Protein" = "Entry")) %>%
-  mutate(Label = coalesce(`Gene Names (primary)`, Protein), mean_intensity = LogIntensities)
+  mutate(Label = coalesce(`Gene Names (primary)`, Protein)) %>%
+  # AGGREGATION STEP: Group by Protein/Label and calculate mean
+  group_by(Protein, Label) %>%
+  summarize(mean_intensity = mean(LogIntensities, na.rm = TRUE), .groups = "drop")
 
-# Global Y-Limits (Proteins)
+# 2. Global Limits (Proteins)
+# (Calculated after aggregation so limits reflect the means, not outliers from single runs)
 all_prot_vals <- c(df_prot_c1$mean_intensity, df_prot_c2$mean_intensity)
-PROT_Y_LIMITS <- c(min(all_prot_vals, na.rm=T) - 0.5, max(all_prot_vals, na.rm=T) + 0.5)
+LIMITS_PROT <- c(min(all_prot_vals, na.rm=T) - 0.5, max(all_prot_vals, na.rm=T) + 0.5)
 
-# RNA Data Prep
-df_rna_c1 <- stats.rna.all %>%
+# 3. RNA Data Prep (Unchanged)
+df_rna_c1 <- stats.rna.clean %>%
   filter(Category == paste("Only in", cond1)) %>%
   mutate(mean_intensity = log2(Mean_cond1 + 1), Label = Gene)
 
-df_rna_c2 <- stats.rna.all %>%
+df_rna_c2 <- stats.rna.clean %>%
   filter(Category == paste("Only in", cond2)) %>%
   mutate(mean_intensity = log2(Mean_cond2 + 1), Label = Gene)
 
-# Global X-Limits (RNA)
+# Global Limits (RNA)
 all_rna_vals <- c(df_rna_c1$mean_intensity, df_rna_c2$mean_intensity)
-RNA_X_LIMITS <- c(min(all_rna_vals, na.rm=T) - 0.1, max(all_rna_vals, na.rm=T) + 0.1)
+LIMITS_RNA <- c(min(all_rna_vals, na.rm=T) - 0.1, max(all_rna_vals, na.rm=T) + 0.1)
 
 
 # --- 3. PLOTTING FUNCTIONS ---
 
-# Vertical Plot (Proteins)
+# Vertical Plot (Now used for RNA)
 generate_vertical_gutter <- function(data, color_hex, title_text, 
                                      y_limits, 
-                                     axis_side = "left",   
+                                     axis_label = "Log Intensity",
+                                     axis_side = "left",    
                                      label_side = "right") 
 {
+  # Filter for custom labels (plot_labels is defined globally)
   plot_data <- data %>%
     mutate(Rank = min_rank(desc(mean_intensity)),
-           label_text = ifelse(Rank <= 10, Label, NA))
+           label_text = ifelse(Label %in% plot_labels, Label, NA)) 
   
   if (label_side == "right") {
-    # Labels Right -> Wide Right Margin
     my_margin  <- margin(0.5, 3.5, 0.5, 1, "cm")
     repel_xlim <- c(0.6, Inf)
   } else {
-    # Labels Left -> Wide Left Margin
     my_margin  <- margin(0.5, 1, 0.5, 3.5, "cm")
     repel_xlim <- c(-Inf, -0.6)
   }
   
-  ggplot(plot_data, aes(x = 0, y = mean_intensity)) +
+  p <- ggplot(plot_data, aes(x = 0, y = mean_intensity)) +
     geom_point(color = color_hex, size = 1.5, alpha = 0.8) +
     
     theme_classic(base_size = 20) +
-    labs(title = title_text, y = "Log Intensity", x = "") +
+    labs(title = title_text, y = axis_label, x = "") +
     theme(
       axis.text.x = element_blank(),
       axis.ticks.x = element_blank(),
@@ -596,47 +346,51 @@ generate_vertical_gutter <- function(data, color_hex, title_text,
       legend.position = "none",
       panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
       plot.margin = my_margin,
-      aspect.ratio = STRIP_RATIO # Use Global Ratio (8)
+      aspect.ratio = STRIP_RATIO 
     ) +
     
     scale_x_continuous(limits = c(-0.5, 0.5)) +
     scale_y_continuous(limits = y_limits, position = axis_side) +
-    coord_cartesian(clip = "off") +
+    coord_cartesian(clip = "off") 
     
-    # Overlay & Labels
-    geom_point(data = subset(plot_data, !is.na(label_text)), aes(x=0, y=mean_intensity),
-               color = "black", size = 2.0, stroke = 1.0, shape = 1) +
-    geom_label_repel(data = subset(plot_data, !is.na(label_text)), aes(label = label_text),
-                     xlim = repel_xlim, direction = "y", min.segment.length = 0,
-                     force = 0.5, max.overlaps = 10, segment.size = 0.5,
-                     point.padding = 0.5, na.rm = TRUE)
+    # Overlay & Labels (Only for matches in plot_labels)
+    if(sum(!is.na(plot_data$label_text)) > 0) {
+      p <- p + 
+        geom_point(data = subset(plot_data, !is.na(label_text)), aes(x=0, y=mean_intensity),
+                   color = "black", size = 2.0, stroke = 1.0, shape = 1) +
+        geom_label_repel(data = subset(plot_data, !is.na(label_text)), aes(label = label_text),
+                         xlim = repel_xlim, direction = "y", min.segment.length = 0,
+                         force = 0.5, max.overlaps = 10, segment.size = 0.5,
+                         point.padding = 0.5, na.rm = TRUE)
+    }
+    return(p)
 }
 
-# Horizontal Plot (RNA)
+# Horizontal Plot (Now used for Proteins)
 generate_horizontal_gutter <- function(data, color_hex, title_text, 
                                        x_limits, 
+                                       axis_label = "Log Intensity",
                                        axis_side = "bottom", 
-                                       label_side = "top")   
+                                       label_side = "top")    
 {
+  # Filter for custom labels (plot_labels is defined globally)
   plot_data <- data %>%
     mutate(Rank = min_rank(desc(mean_intensity)),
-           label_text = ifelse(Rank <= 10, Label, NA))
+           label_text = ifelse(Label %in% plot_labels, Label, NA)) 
   
   if (label_side == "top") {
-    # Labels Top -> Wide Top Margin
     my_margin  <- margin(2.5, 1, 1, 1, "cm")
     repel_ylim <- c(0.6, Inf)
   } else {
-    # Labels Bottom -> Wide Bottom Margin
     my_margin  <- margin(1, 1, 2.5, 1, "cm")
     repel_ylim <- c(-Inf, -0.6)
   }
   
-  ggplot(plot_data, aes(x = mean_intensity, y = 0)) +
+  p <- ggplot(plot_data, aes(x = mean_intensity, y = 0)) +
     geom_point(color = color_hex, size = 1.5, alpha = 0.8) +
     
     theme_classic(base_size = 20) +
-    labs(title = title_text, x = "Log2(CPM + 1)", y = "") +
+    labs(title = title_text, x = axis_label, y = "") +
     theme(
       axis.text.y = element_blank(),
       axis.ticks.y = element_blank(),
@@ -645,47 +399,55 @@ generate_horizontal_gutter <- function(data, color_hex, title_text,
       legend.position = "none",
       panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
       plot.margin = my_margin,
-      aspect.ratio = 1/STRIP_RATIO # Use Inverse Ratio (0.125)
+      aspect.ratio = 1/STRIP_RATIO 
     ) +
     
     scale_y_continuous(limits = c(-0.2, 0.2)) +
     scale_x_continuous(limits = x_limits, position = axis_side) +
-    coord_cartesian(clip = "off") +
+    coord_cartesian(clip = "off") 
     
-    # Overlay & Labels
-    geom_point(data = subset(plot_data, !is.na(label_text)), aes(x=mean_intensity, y=0),
-               color = "black", size = 2.0, stroke = 1.0, shape = 1) +
-    geom_label_repel(data = subset(plot_data, !is.na(label_text)), aes(label = label_text),
-                     ylim = repel_ylim, direction = "x", min.segment.length = 0,
-                     force = 0.5, max.overlaps = 10, segment.size = 0.5,
-                     point.padding = 0.5, na.rm = TRUE)
+    # Overlay & Labels (Only for matches in plot_labels)
+    if(sum(!is.na(plot_data$label_text)) > 0) {
+      p <- p + 
+        geom_point(data = subset(plot_data, !is.na(label_text)), aes(x=mean_intensity, y=0),
+                   color = "black", size = 2.0, stroke = 1.0, shape = 1) +
+        geom_label_repel(data = subset(plot_data, !is.na(label_text)), aes(label = label_text),
+                         ylim = repel_ylim, direction = "x", min.segment.length = 0,
+                         force = 0.5, max.overlaps = 10, segment.size = 0.5,
+                         point.padding = 0.5, na.rm = TRUE)
+    }
+    return(p)
 }
 
 
-# --- 4. GENERATE PLOTS ---
+# --- 4. GENERATE PLOTS---
 
-# Protein: DF
-p_prot_1 <- generate_vertical_gutter(
-  df_prot_c1, cond1_sig_color, paste("Protein:", cond1),
-  y_limits = PROT_Y_LIMITS, axis_side = "left", label_side = "right"
+# Protein: DF (Horizontal) 
+p_prot_1 <- generate_horizontal_gutter(
+  df_prot_c1, c1_color, paste("Protein:", cond1),
+  x_limits = LIMITS_PROT, axis_label = "Log Intensity",
+  axis_side = "bottom", label_side = "top"
 )
 
-# Protein: UF
-p_prot_2 <- generate_vertical_gutter(
-  df_prot_c2, cond2_sig_color, paste("Protein:", cond2),
-  y_limits = PROT_Y_LIMITS, axis_side = "right", label_side = "left"
+# Protein: UF (Horizontal) 
+p_prot_2 <- generate_horizontal_gutter(
+  df_prot_c2, c2_color, paste("Protein:", cond2),
+  x_limits = LIMITS_PROT, axis_label = "Log Intensity",
+  axis_side = "top", label_side = "bottom"
 )
 
-# RNA: DF
-p_rna_1  <- generate_horizontal_gutter(
-  df_rna_c1, cond1_sig_color, paste("RNA:", cond1),
-  x_limits = RNA_X_LIMITS, axis_side = "bottom", label_side = "top"
+# RNA: DF (Vertical)
+p_rna_1  <- generate_vertical_gutter(
+  df_rna_c1, c1_color, paste("RNA:", cond1),
+  y_limits = LIMITS_RNA, axis_label = "Log2(CPM + 1)",
+  axis_side = "left", label_side = "right"
 )
 
-# RNA: UF
-p_rna_2  <- generate_horizontal_gutter(
-  df_rna_c2, cond2_sig_color, paste("RNA:", cond2),
-  x_limits = RNA_X_LIMITS, axis_side = "top", label_side = "bottom"
+# RNA: UF (Vertical)
+p_rna_2  <- generate_vertical_gutter(
+  df_rna_c2, c2_color, paste("RNA:", cond2),
+  y_limits = LIMITS_RNA, axis_label = "Log2(CPM + 1)",
+  axis_side = "right", label_side = "left"
 )
 
 # --- 5. DISPLAY ---
@@ -695,71 +457,54 @@ print(p_rna_1)
 print(p_rna_2)
 ```
 
+Half-life analysis, from Savitski's 2018 Nat. Comm paper (proteome-wide half-life determination for proteins in different primary cells)
+
+Protein half-lives are condensed down to a single value that is the average of determined half-lives across all cell lines where the data quality = "good"
+```{r}
+# --- HALF LIFE ANALYSIS ---
+hl_raw <- read_excel(file.path(ref_dir, "protein-half-life-Savitski-2018_high-qual.xlsx"))
+
+# 1. Clean & Aggregate
+hl_agg <- hl_raw %>%
+  pivot_longer(cols = -gene_name, names_to = c("cell", "rep", ".value"), 
+               names_pattern = "^(.+) replicate (\\d+) (.+)$") %>%
+  filter(dataQual == "good") %>%
+  group_by(gene_name) %>%
+  summarise(mean_half_life = mean(half_life, na.rm = TRUE), .groups="drop")
+
+# 2. Merge (Primary + Secondary Rescue)
+df_hl <- proteogenomics_stats %>%
+  left_join(hl_agg, by = c("Gene Names (primary)" = "gene_name")) %>%
+  rename(hl_primary = mean_half_life)
+
+# Find missing and rescue via synonyms
+hl_rescue <- df_hl %>%
+  filter(is.na(hl_primary)) %>%
+  select(Protein, `Gene Names`) %>%
+  separate_rows(`Gene Names`, sep = " ") %>%
+  inner_join(hl_agg, by = c("Gene Names" = "gene_name")) %>%
+  group_by(Protein) %>%
+  summarise(hl_sec = mean(mean_half_life), .groups="drop")
+
+df_final <- df_hl %>%
+  left_join(hl_rescue, by="Protein") %>%
+  mutate(final_hl = coalesce(hl_primary, hl_sec), log_hl = log10(final_hl)) %>%
+  filter(!is.na(final_hl))
+
+# 3. Correlation
+cor_res <- cor.test(abs(df_final$Studentized_Resid), df_final$log_hl, method = "spearman")
+
+ggplot(df_final, aes(x = log_hl, y = abs(Studentized_Resid))) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Instability vs Discordance",
+       subtitle = paste("Spearman rho:", round(cor_res$estimate, 3), 
+                        "| p =", signif(cor_res$p.value, 3))) +
+  theme_minimal()
+```
 
 Protein half-life calculations and divergence
 ```{r}
-protein_half_lives <- read_excel(file.path(ref_dir, "protein-half-life-Savitski-2018_high-qual.xlsx"))
-# ---------------------------------------------------------
-# Part 1: Clean and Aggregate Protein Half-Lives
-# ---------------------------------------------------------
-#
-half_life_long <- protein_half_lives %>%
-  pivot_longer(
-    cols = -gene_name,
-    names_to = c("cell_type", "replicate_num", ".value"),
-    names_pattern = "^(.+) replicate (\\d+) (.+)$"
-  )
-#
-# Calculate mean half-life across all cell types/replicates where dataQual = "good"
-half_life_agg <- half_life_long %>%
-  filter(dataQual == "good") %>%
-  group_by(gene_name) %>%
-  summarise(
-    mean_half_life = mean(half_life, na.rm = TRUE),
-    n_replicates = n() # Optional: track how many data points went into the mean
-  ) %>%
-  ungroup()
-#
-# ---------------------------------------------------------
-# Part 2: Hierarchical Merge
-# ---------------------------------------------------------
-#
-# Step A: Perform the Primary Lookup
-# Match strictly on 'Gene Names (primary)'
-merged_primary <- proteogenomics_stats %>%
-  left_join(half_life_agg, by = c("Gene Names (primary)" = "gene_name")) %>%
-  rename(half_life_primary = mean_half_life)
-#
-# Step B: Prepare Secondary Lookup (Synonyms)
-# We only need to search for proteins that did NOT find a match in Step A.
-# We separate the "Gene Names" column (e.g., "UBA6 MOP4") into individual rows to join.
-secondary_matches <- merged_primary %>%
-  filter(is.na(half_life_primary)) %>%
-  select(Protein, `Gene Names`) %>%
-  separate_rows(`Gene Names`, sep = " ") %>%
-  inner_join(half_life_agg, by = c("Gene Names" = "gene_name")) %>%
-  group_by(Protein) %>%
-  summarise(
-    half_life_secondary = mean(mean_half_life, na.rm = TRUE), # Take mean if synonyms map to multiple half-life entries
-    .groups = "drop"
-  )
-#
-# Step C: Final Combination
-# Merge the secondary matches back into the main dataframe and coalesce the columns.
-proteogenomics_protein_half_lives <- merged_primary %>%
-  left_join(secondary_matches, by = "Protein") %>%
-  mutate(
-    final_half_life = coalesce(half_life_primary, half_life_secondary),
-    match_source = case_when(
-      !is.na(half_life_primary) ~ "Primary (Gene Name)",
-      !is.na(half_life_secondary) ~ "Secondary (Synonym)",
-      TRUE ~ "No Match"
-    )
-  )
-#
-
-library(tidyverse)
-
 # 1. Define your overflow threshold
 overflow_threshold <- 400
 
@@ -797,248 +542,33 @@ half_life_histo <- ggplot(half_life_data_cleaned, aes(x = half_life_capped)) +
 print(half_life_histo)
 ```
 
-Protein half-life analyses & visualization
-```{r}
-library(tidyverse)
-library(broom)
-library(ggpubr)
 
-# ---------------------------------------------------------
-# 0. Data Preparation
-# ---------------------------------------------------------
-analysis_df <- proteogenomics_stats %>%
-  inner_join(select(proteogenomics_protein_half_lives, Protein, final_half_life), by = "Protein") %>%
-  filter(!is.na(final_half_life), !is.na(Studentized_Resid)) %>%
+UBIQUITYLATION ANALYSIS -> Not the best analysis as of 23 Jan 2026. Takes ubiquitylation data from Choudhary 2024 cell paper and creates binary "TRUE/FALSE" for whether or not the protein is ubiquitinated, comapres between discordant/condordant groups.
+```{r}
+# --- UBIQUITYLATION ANALYSIS ---
+df.ubi <- read_excel(file.path(ref_dir, "Choudhary_ubiquitylation_TableS1.xlsx")) #### only read this once, the readxl() function hates this file.
+ubi_ids <- unique(unlist(strsplit(df.ubi$Proteins, ";")))
+
+df_ubi_stat <- df_final %>%
   mutate(
-    log_half_life = log10(final_half_life),
-    Abs_Resid = abs(Studentized_Resid) # THE KEY METRIC: Magnitude of error
-  )
-
-# Calculate global N for the scatter plot
-n_total <- nrow(analysis_df)
-
-# ---------------------------------------------------------
-# Analysis 1: The Interaction Model (Rigorous)
-# ---------------------------------------------------------
-interaction_model <- lm(Protein_Log2FC ~ RNA_Log2FC * log_half_life, data = analysis_df)
-
-print("--- Interaction Model Results ---")
-print(tidy(interaction_model))
-
-# ---------------------------------------------------------
-# Analysis 2: Residual Analysis (Explanatory)
-# ---------------------------------------------------------
-cor_test <- cor.test(analysis_df$Abs_Resid, analysis_df$log_half_life, method = "spearman")
-
-# Create a dynamic label for the plot
-rho_val <- round(cor_test$estimate, 3)
-p_val_text <- ifelse(cor_test$p.value < 2.2e-16, "p < 2.2e-16", paste("p =", signif(cor_test$p.value, 3)))
-stats_subtitle <- paste0("Spearman rho = ", rho_val, " | ", p_val_text, " | n = ", n_total)
-
-print("--- Correlation: Absolute Residuals vs Half-Life ---")
-print(paste("Spearman rho:", rho_val))
-print(paste("P-value:", signif(cor_test$p.value, 3)))
-
-# Visualization: Scatter plot with stats in subtitle
-p1 <- ggplot(analysis_df, aes(x = log_half_life, y = Abs_Resid)) +
-  geom_point(alpha = 0.3, color = "#2c3e50") +
-  
-  # Add the smoothed trend line
-  geom_smooth(method = "lm", color = "#E41A1C", fill = "#E41A1C", alpha = 0.2) +
-  
-  # Add the discordance threshold for context
-  geom_hline(yintercept = 3, linetype = "dashed", color = "grey50") +
-  
-  theme_minimal() +
-  labs(title = "Instability Drives Discordance Magnitude",
-       subtitle = stats_subtitle, # NOW INCLUDES N and P-VALUE
-       x = "Log10(Protein Half-Life)",
-       y = "Magnitude of Divergence |Robust Residual|")
-
-# ---------------------------------------------------------
-# Analysis 3: Categorical Enrichment
-# ---------------------------------------------------------
-
-# 1. Prepare Data: Calculate Counts for Labels
-plot_data <- analysis_df %>%
-  group_by(Is_Discordant) %>%
-  mutate(group_label = paste0(Is_Discordant, "\n(n = ", n(), ")")) %>%
-  ungroup()
-
-# 2. Calculate Stats for Annotation
-wilcox_res <- wilcox.test(final_half_life ~ Is_Discordant, data = analysis_df)
-p_val_label <- paste0("Wilcoxon, p = ", signif(wilcox_res$p.value, 3))
-
-# 3. Generate Violin Plot
-p2 <- ggplot(plot_data, aes(x = group_label, y = final_half_life, fill = Is_Discordant)) +
-  
-  # Aesthetics
-  geom_violin(scale = "width", trim = TRUE, color = "grey30", alpha = 0.7) +
-  geom_boxplot(width = 0.15, outlier.size = 0.5, color = "grey30") +
-  scale_fill_brewer(palette = "Set2") +
-  scale_y_log10() + 
-  
-  # Statistical Annotation
-  annotate("text", 
-           x = 1.5, 
-           y = max(plot_data$final_half_life, na.rm = TRUE) * 1.3, 
-           label = p_val_label, 
-           size = 4, fontface = "italic") +
-  
-  # Labels
-  labs(title = "Protein Stability Distribution by Discordance",
-       subtitle = "Comparison of protein half-lives between discordant and concordant groups",
-       y = "Protein Half-Life (hours, log scale)",
-       x = "Discordance Status") +
-  
-  theme_bw(base_size = 12) +
-  theme(legend.position = "none",
-        axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Display plots
-print(p1)
-print(p2)
-```
-
-
-
-
-Investigating ubiquitylation
-Load reference from ubi site occupancy (do this only once - it doesn't like the 'NA' values)
-```{r}
-df.ubi <- read_excel(file.path(ref_dir, "Choudhary_ubiquitylation_TableS1.xlsx"))
-```
-
-Analyze distributions of protein discordance for known ubiquitinated proteins/proteins without a ubiquitin annotation
-```{r}
-library(dplyr)
-library(ggplot2)
-
-# 1. Define the list of ubiquitinated proteins from your reference file
-ubi_ids <- df.ubi %>%
-  pull(Proteins) %>%
-  strsplit(";") %>%
-  unlist() %>%
-  unique()
-
-# 2. Create the analysis dataframe
-# We flag proteins as "Ubiquitinated" if their ID appears in the ubi list
-df.analysis <- proteogenomics_protein_half_lives %>%
-  mutate(
-    has_ubi_site = ifelse(Protein %in% ubi_ids, "Ubiquitinated", "No Known Site"),
-    has_ubi_site = factor(has_ubi_site, levels = c("No Known Site", "Ubiquitinated"))
-  )
-
-# 3. Statistical Test: Wilcoxon Rank Sum
-# Testing if the 'Studentized_Resid' distribution differs between groups
-stat.test <- wilcox.test(Studentized_Resid ~ has_ubi_site, data = df.analysis)
-
-# Print the p-value to console
-print(stat.test)
-```
-
-Plot distributions
-```{r}
-library(dplyr)
-library(ggplot2)
-library(scales)
-
-# 1. Calculate the 'n' for each group
-# We create a named vector to map the current labels to new labels like "Group (n=123)"
-group_counts <- df.analysis %>%
-  group_by(has_ubi_site) %>%
-  tally()
-
-# Create a named vector for the labels: c("OldName" = "OldName\n(n=123)")
-my_labels <- setNames(
-  paste0(group_counts$has_ubi_site, "\n(n = ", group_counts$n, ")"),
-  group_counts$has_ubi_site
-)
-
-# 2. Generate the Plot
-ggplot(df.analysis, aes(x = has_ubi_site, y = Studentized_Resid, fill = has_ubi_site)) +
-  geom_violin(alpha = 0.4, trim = FALSE, color = NA) +
-  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.8) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "darkred") +
-  
-  # Set colors
-  scale_fill_manual(values = c("gray70", "steelblue")) +
-  
-  # --- UPDATE 1: Add the 'n' counts to the X-axis labels ---
-  scale_x_discrete(labels = my_labels) +
-  
-  # Zoom without data loss
-  coord_cartesian(ylim = c(-5, 5)) + 
-  
-  labs(
-    title = "Discordance in Ubiquitinated vs. Non-Ubiquitinated Proteins",
-    # --- UPDATE 2: Scientific notation for p-value ---
-    subtitle = paste0("Mann-Whitney U Test: p = ", scales::scientific(stat.test$p.value, digits = 3)),
-    y = "Studentized Residuals (Observed - Expected)",
-    x = NULL # Remove "Ubiquitination Status" label since the group names are self-explanatory
-  ) +
-  theme_classic() +
-  theme(legend.position = "none")
-```
-
-
-
-```{r}
-library(dplyr)
-library(ggplot2)
-
-# 1. Define Discordance Direction
-# We categorize every protein into three bins: Negative, Positive, or Concordant
-df.refined <- df.analysis %>%
-  mutate(
-    discordance_type = case_when(
-      Is_Discordant == TRUE & Studentized_Resid < 0 ~ "Negative Discordance",
-      Is_Discordant == TRUE & Studentized_Resid > 0 ~ "Positive Discordance",
+    Ubi_Status = ifelse(Protein %in% ubi_ids, "Ubiquitinated", "No Site"),
+    Disc_Dir = case_when(
+      Is_Discordant & Studentized_Resid < 0 ~ "Negative",
+      Is_Discordant & Studentized_Resid > 0 ~ "Positive",
       TRUE ~ "Concordant"
     )
   )
 
-# 2. Filter for the Comparison of Interest
-# We want to compare "Negative Discordance" (Degraded) vs. "Concordant" (Normal).
-# We exclude "Positive Discordance" to avoid muddying the baseline.
-df.test <- df.refined %>%
-  filter(discordance_type %in% c("Negative Discordance", "Concordant")) %>%
-  mutate(discordance_type = factor(discordance_type, levels = c("Concordant", "Negative Discordance")))
+# Plot: Enrichment in Negative Discordance
+df_ubi_stat %>%
+  filter(Disc_Dir %in% c("Negative", "Concordant")) %>%
+  ggplot(aes(x = Disc_Dir, fill = Ubi_Status)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("gray80", "darkred")) +
+  labs(title = "Ubiquitylation Enrichment", y = "Proportion") +
+  theme_classic()
 
-# 3. Create Contingency Table
-cont_table_refined <- table(df.test$discordance_type, df.test$has_ubi_site)
-
-print("Contingency Table (Negative Discordance vs. Concordant):")
-print(cont_table_refined)
-
-# 4. Statistical Test: Fisher's Exact Test
-fisher_refined <- fisher.test(cont_table_refined)
-print(fisher_refined)
-
-# 5. Visualization
-# Calculate percentages for the plot
-plot_data_refined <- df.test %>%
-  group_by(discordance_type) %>%
-  count(has_ubi_site) %>%
-  mutate(percentage = n / sum(n) * 100) %>%
-  ungroup()
-
-ggplot(plot_data_refined, aes(x = discordance_type, y = percentage, fill = has_ubi_site)) +
-  geom_bar(stat = "identity", position = "fill", width = 0.6) +
-  scale_y_continuous(labels = scales::percent) +
-  scale_fill_manual(values = c("gray80", "darkred")) + # distinct color for clarity
-  labs(
-    title = "Ubiquitination Enrichment in Negatively Discordant Proteins",
-    subtitle = paste0("Fisher's Exact Test: p = ", format.pval(fisher_refined$p.value, digits = 3),
-                      "\nOdds Ratio: ", round(fisher_refined$estimate, 2)),
-    y = "Proportion of Proteins",
-    x = "Discordance Status",
-    fill = "Ubiquitination Status"
-  ) +
-  theme_classic() +
-  theme(
-    axis.text = element_text(size = 12, color = "black"),
-    plot.title = element_text(face = "bold")
-  )
+# Stats
+fisher.test(table(df_ubi_stat$Disc_Dir[df_ubi_stat$Disc_Dir != "Positive"], 
+                  df_ubi_stat$Ubi_Status[df_ubi_stat$Disc_Dir != "Positive"]))
 ```
-
