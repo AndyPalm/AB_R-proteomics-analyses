@@ -1,0 +1,209 @@
+---
+title: "Bubble_plot"
+output: html_document
+date: "2026-02-05"
+---
+
+```{r}
+library(tidyverse)
+library(pbapply)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(ggrepel)
+library(RColorBrewer)
+library(readxl)
+library(dplyr)
+library(readxl)
+library(janitor)
+library(here)
+library(arrow)
+library(beeswarm)
+
+box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
+ref_dir  <- file.path(box_root, "Reference_dbs")
+exp1_dir <- file.path(box_root, "AP2-339_HAECs_DF-UF_ALOD4_OLyA", "01_Input_Search_Results")
+parquet_files <- file.path(box_root, "AP2-339_HAECs_DF-UF_ALOD4_OLyA", "02_R_Intermediates")
+output_dir <- file.path(box_root, "AP2-339_HAECs_DF-UF_ALOD4_OLyA", "bubble_plot")
+if (!dir.exists(output_dir)) {dir.create(output_dir, recursive = TRUE)
+}
+```
+
+
+```{r}
+# 1. Read protein-level file
+
+# Define paths for the source CSV and the target Parquet file
+csv_source <- file.path(exp1_dir, "339B-top4-features_protein-level-data_impute.csv")
+pq_target  <- file.path(parquet_files, "339B-top4-features_protein-level-data_impute.parquet")
+
+# Conditional Logic: Only convert if the parquet file doesn't already exist
+if (!file.exists(pq_target)) {
+  message("Parquet file not found. Reading CSV and converting... (This may take a moment)")
+  
+  # read_csv_arrow is often faster than readr::read_csv for massive files
+  temp_df <- arrow::read_csv_arrow(csv_source) 
+  
+  # Write to parquet
+  arrow::write_parquet(temp_df, pq_target)
+  
+  # Clean up memory immediately
+  rm(temp_df)
+  gc() 
+  message("Conversion complete.")
+} else {
+  message("Parquet file found. Loading cached data.")
+}
+
+# Read the optimized Parquet file
+exp1.protein <- arrow::read_parquet(pq_target)
+
+# 2. load UniProt accession <-> Gene mapping file and apply to features
+df.labels <- read_excel(file.path(ref_dir, "uniprot_hs_29may25.xlsx"))
+lookup <- df.labels %>% select(ProteinID, Gene) # Tidyverse style selection
+exp1.protein <- exp1.protein %>%
+  left_join(lookup, by = c("Protein" = "ProteinID")) %>%
+  relocate(Gene, .after = Protein) # Move Gene column to the front for easier viewing
+
+# Verify the merge
+head(exp1.protein)
+```
+
+```{r}
+library(tidyverse)
+library(scales)
+
+# -------------------------------------------------------------------------
+# 1. DATA PROCESSING
+# -------------------------------------------------------------------------
+
+# A. Complete the dataframe to handle missing replicates
+df_full <- exp1.protein %>%
+  group_by(GROUP) %>%
+  mutate(TotalRepsInGroup = n_distinct(SUBJECT)) %>% 
+  ungroup() %>%
+  tidyr::complete(nesting(Protein, Gene), nesting(GROUP, SUBJECT, TotalRepsInGroup))
+
+# B. Calculate Aggregated Stats
+df_agg <- df_full %>%
+  group_by(Protein, GROUP) %>%
+  dplyr::summarize(
+    Gene = first(Gene),
+    MeanIntensity = mean(LogIntensities, na.rm = TRUE),
+    DetectCount = sum(!is.na(LogIntensities)),
+    TotalReps = max(TotalRepsInGroup),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    PctDetected = DetectCount / TotalReps,
+    MeanIntensity = ifelse(is.nan(MeanIntensity), NA, MeanIntensity),
+    PlotLabel = ifelse(is.na(Gene), Protein, Gene) 
+  )
+
+# C. Calculate Z-Scores
+df_agg <- df_agg %>%
+  group_by(Protein) %>%
+  mutate(
+    row_mean = mean(MeanIntensity, na.rm = TRUE),
+    row_sd = sd(MeanIntensity, na.rm = TRUE),
+    ZScore = (MeanIntensity - row_mean) / row_sd
+  ) %>%
+  ungroup()
+
+# -------------------------------------------------------------------------
+# 2. MARKER SELECTION & SORTING (UPDATED)
+# -------------------------------------------------------------------------
+
+# A. Identify the "Max Group" for each protein
+target_groups <- setdiff(unique(df_agg$GROUP), c("DF", "UF"))
+
+protein_ranking <- df_agg %>%
+  filter(GROUP %in% target_groups) %>%
+  filter(is.na(Gene) | !str_detect(Gene, "^KRT")) %>% #filter keratins
+  group_by(Protein) %>%
+  slice_max(ZScore, n = 1, with_ties = FALSE) %>%
+  select(Protein, MaxGroup = GROUP, MaxZ = ZScore)
+
+# B. Select Top N proteins per group
+top_n_per_group <- 15 
+
+selected_proteins <- protein_ranking %>%
+  group_by(MaxGroup) %>%
+  slice_max(MaxZ, n = top_n_per_group) %>%
+  ungroup() %>%
+  arrange(MaxGroup, MaxZ)
+
+# C. Filter Data & Apply Aesthetic Ordering
+plot_data <- df_agg %>%
+  filter(Protein %in% selected_proteins$Protein)
+
+# --- Set Column Order ---
+col_order <- c("ALOD4DF", "OlyADF", "ALOD4UF", "OlyAUF", "DF", "UF")
+plot_data$GROUP <- factor(plot_data$GROUP, levels = col_order)
+
+# --- Set Row Order ---
+plot_data$Protein <- factor(plot_data$Protein, levels = unique(selected_proteins$Protein))
+y_axis_labels <- setNames(plot_data$PlotLabel, plot_data$Protein)
+
+# D. Binning
+z_breaks <- c(-Inf, -2, -1, 0, 1, 2, Inf)
+z_labels <- c("< -2", "-2 to -1", "-1 to 0", "0 to 1", "1 to 2", "> 2")
+raw_breaks <- c(-Inf, 15, 18, 21, 24, 27, Inf)
+raw_labels <- c("< 15", "15-18", "18-21", "21-24", "24-27", "> 27")
+
+plot_data <- plot_data %>%
+  mutate(
+    Z_Bin = cut(ZScore, breaks = z_breaks, labels = z_labels),
+    Raw_Bin = cut(MeanIntensity, breaks = raw_breaks, labels = raw_labels)
+  )
+
+# -------------------------------------------------------------------------
+# 3. PLOTTING (UPDATED)
+# -------------------------------------------------------------------------
+
+# --- UPDATE: Theme modified to remove horizontal grid lines ---
+common_theme <- theme_minimal() +
+  theme(
+    axis.text.x.top = element_text(angle = 45, vjust = 0, hjust = 0, face = "bold", size = 10),
+    axis.text.y = element_text(size = 8),
+    panel.grid.major.x = element_line(color = "grey90"), # Keep vertical lines
+    panel.grid.major.y = element_blank(),                # Remove horizontal lines
+    panel.grid.minor = element_blank(),                  # Remove minor lines
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    legend.position = "right"
+  )
+
+# --- P1: Z-SCORE PLOT ---
+p1 <- ggplot(plot_data, aes(x = GROUP, y = Protein)) +
+  geom_point(aes(size = PctDetected, fill = Z_Bin), shape = 21, color = "white") +
+  scale_fill_brewer(palette = "RdBu", direction = -1, name = "Z-Score", drop=FALSE) +
+  scale_size_continuous(range = c(0, 6), labels = scales::percent, name = "% Detected") +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(labels = y_axis_labels) +
+  labs(title = "Protein Expression (Z-Score)", x = "", y = "") +
+  common_theme +
+  coord_fixed(ratio = 0.5)
+
+# --- P2: RAW INTENSITY PLOT ---
+p2 <- ggplot(plot_data, aes(x = GROUP, y = Protein)) +
+  geom_point(aes(size = PctDetected, fill = Raw_Bin), shape = 21, color = "black") +
+  scale_fill_viridis_d(option = "magma", name = "Log2 Intensity", drop=FALSE) +
+  scale_size_continuous(range = c(0, 6), labels = scales::percent, name = "% Detected") +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(labels = y_axis_labels) +
+  labs(title = "Protein Expression (Log2 Intensity)", x = "", y = "") +
+  common_theme +
+  coord_fixed(ratio = 0.5)
+
+print(p1)
+print(p2)
+```
+
+
+```{r}
+ggsave(file.path(output_dir, "protein_bubble_zscore_coord0p5.pdf"), plot = p1, width = 10, height = 12)
+ggsave(file.path(output_dir, "protein_bubble_intensity_coord0p5.pdf"), plot = p2, width = 10, height = 12, bg = "white")
+```
+
+

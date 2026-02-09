@@ -5,12 +5,12 @@ date: "2025-12-15"
 ---
 Extract feature-level data for specific proteins from DIA-NN, the MSstats.csv output, and graph the intensities.
 ```{r}
-extract_list <- c("EGFR","ADGRG1","ICAM1","ABI1","CD46","PLXNB2")  ## list your proteins here!!
+extract_list <- c("ESYT2")  ## list your proteins here!!
 box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
 ref_dir  <- file.path(box_root, "Reference_dbs")
 exp1_dir <- file.path(box_root, "AP2-296_A431-3probe", "01_Input_Search_Results")
 parquet_files <- file.path(box_root, "AP2-296_A431-3probe", "02_R_Intermediates")
-output_dir <- file.path(box_root, "POCA2", "03_graphs_plots")
+output_dir <- file.path(box_root, "AP2-296_A431-3probe", "feature_extraction")
 if (!dir.exists(output_dir)) {dir.create(output_dir, recursive = TRUE)
 }
 library(tidyverse)
@@ -64,6 +64,19 @@ exp1.features <- exp1.features %>%
 head(exp1.features)
 ```
 
+Check matches/non-matches
+```{r}
+matches <- extract_list[extract_list %in% exp1.features$Gene]
+mismatches <- extract_list[!(extract_list %in% exp1.features$Gene)]
+
+message("Matches found: ", length(unique(matches)))
+print(unique(matches))
+#
+message("Genes not found: ", length(unique(mismatches)))
+print(unique(mismatches))
+```
+
+
 Extracting features
 ```{r}
 # 1. Clean the dataframe - need to do if "row headers = FALSE" was not set during export
@@ -92,3 +105,9 @@ if (nrow(features_subset) == 0) {
 source(here::here("src", "DIA_feature_extract_barplots.R")) 
 batch_plot_genes(extract_list, exp1.features, output_dir)
 ```
+
+```{r plot_extraction, message=FALSE, warning=FALSE}
+source(here::here("src", "DIA_feature_extract_barplots_by_group.R")) 
+batch_plot_genes_by_group(extract_list, exp1.features, output_dir)
+```
+
