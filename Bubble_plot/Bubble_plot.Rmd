@@ -20,6 +20,7 @@ library(janitor)
 library(here)
 library(arrow)
 library(beeswarm)
+library(scales)
 
 box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
 ref_dir  <- file.path(box_root, "Reference_dbs")
@@ -71,11 +72,8 @@ head(exp1.protein)
 ```
 
 ```{r}
-library(tidyverse)
-library(scales)
-
 # -------------------------------------------------------------------------
-# 1. DATA PROCESSING
+# DATA PROCESSING
 # -------------------------------------------------------------------------
 
 # A. Complete the dataframe to handle missing replicates
@@ -174,10 +172,24 @@ common_theme <- theme_minimal() +
     legend.position = "right"
   )
 
-# --- P1: Z-SCORE PLOT ---
+z_colors <- c(
+  "< -2"    = "green",
+  "-2 to -1" = "#4393c3",
+  "-1 to 0"  = "#d1e5f0", 
+  "0 to 1"   = "#ffbdbd", 
+  "1 to 2"   = "#f76a6a",
+  "> 2"      = "purple"
+)
+#
+# --- P1: Z-SCORE PLOT WITH MANUAL COLORS ---
 p1 <- ggplot(plot_data, aes(x = GROUP, y = Protein)) +
   geom_point(aes(size = PctDetected, fill = Z_Bin), shape = 21, color = "white") +
-  scale_fill_brewer(palette = "RdBu", direction = -1, name = "Z-Score", drop=FALSE) +
+  # Use scale_fill_manual instead of scale_fill_brewer
+  scale_fill_manual(
+    values = z_colors, 
+    name = "Z-Score", 
+    drop = FALSE
+  ) +
   scale_size_continuous(range = c(0, 6), labels = scales::percent, name = "% Detected") +
   scale_x_discrete(position = "top") +
   scale_y_discrete(labels = y_axis_labels) +
@@ -202,8 +214,123 @@ print(p2)
 
 
 ```{r}
-ggsave(file.path(output_dir, "protein_bubble_zscore_coord0p5.pdf"), plot = p1, width = 10, height = 12)
+ggsave(file.path(output_dir, "protein_bubble_zscore_coord0p5_9Feb26.pdf"), plot = p1, width = 10, height = 12)
 ggsave(file.path(output_dir, "protein_bubble_intensity_coord0p5.pdf"), plot = p2, width = 10, height = 12, bg = "white")
 ```
 
+```{r}
+# --- P3: plotting only PM/surface-annotated proteins ---
+subcell_list <- read_excel("C:/Users/andbp/Documents/R_data/R_local/AP2-296/analysis/PM_surface_proteinID.xlsx")
 
+# Restrict df_agg to proteins present in subcell_list
+df_agg_subcell <- df_agg %>%
+  semi_join(subcell_list, by = c("Protein" = "ProteinID"))
+
+# Define target groups (exclude DF/UF)
+target_groups <- setdiff(unique(df_agg_subcell$GROUP), c("DF", "UF"))
+
+# For each protein, find the max and min ZScore across target groups,
+# compute the spread (difference), and record which groups achieve them.
+protein_spread_ranking <- df_agg_subcell %>%
+  filter(GROUP %in% target_groups) %>%
+  filter(is.na(Gene) | !str_detect(Gene, "^KRT")) %>%  # filter keratins
+  group_by(Protein) %>%
+  summarise(
+    MaxZ = suppressWarnings(max(ZScore, na.rm = TRUE)),
+    MinZ = suppressWarnings(min(ZScore, na.rm = TRUE)),
+    ZDiff = MaxZ - MinZ,
+    MaxGroup = GROUP[which.max(ZScore)][1],
+    MinGroup = GROUP[which.min(ZScore)][1],
+    .groups = "drop"
+  ) %>%
+  # guard against proteins with all-NA ZScore (max/min become -Inf/Inf)
+  filter(is.finite(MaxZ), is.finite(MinZ))
+
+# Select top N proteins per MaxGroup by largest ZDiff
+top_n_per_group <- 25
+
+selected_proteins_subcell <- protein_spread_ranking %>%
+  group_by(MaxGroup) %>%
+  slice_max(ZDiff, n = top_n_per_group, with_ties = FALSE) %>%
+  ungroup() %>%
+  arrange(MaxGroup, desc(ZDiff))
+
+# (optional) pull the full df_agg rows for plotting/reporting
+df_agg_selected_subcell <- df_agg_subcell %>%
+  semi_join(selected_proteins_subcell, by = "Protein")
+
+# plot_data_subcell: restrict to the selected subcell proteins (from prior step)
+plot_data_subcell <- df_agg_subcell %>%
+  filter(Protein %in% selected_proteins_subcell$Protein)
+```
+
+
+```{r}
+# --- Set Column Order ---
+col_order <- c("ALOD4DF", "OlyADF", "ALOD4UF", "OlyAUF", "DF", "UF")
+plot_data_subcell <- plot_data_subcell %>%
+  mutate(GROUP = factor(GROUP, levels = col_order))
+
+# --- Set Row Order ---
+# Keep the same ordering as selected_proteins_subcell (already arranged by MaxGroup, desc(ZDiff))
+protein_order <- selected_proteins_subcell$Protein
+plot_data_subcell <- plot_data_subcell %>%
+  mutate(Protein = factor(Protein, levels = protein_order))
+
+# Axis labels mapping (Protein factor -> PlotLabel)
+# Use distinct() so you only keep one label per protein
+y_axis_labels_subcell <- plot_data_subcell %>%
+  distinct(Protein, PlotLabel) %>%
+  { setNames(.$PlotLabel, .$Protein) }
+
+z_breaks <- c(-Inf, -1.5, -1, -0.5, 0.5, 1, 1.5, Inf)
+z_labels <- c("< -1.5", "-1.5 to -1", "-1 to -0.5", "-0.5 to 0.5", "0.5 to 1", "1 to 1.5", "> 1.5")
+
+plot_data_subcell <- plot_data_subcell %>%
+  mutate(
+    Z_Bin   = cut(ZScore,        breaks = z_breaks,   labels = z_labels),
+    Raw_Bin = cut(MeanIntensity, breaks = raw_breaks, labels = raw_labels)
+  )
+#fix factor levels
+plot_data_subcell <- plot_data_subcell %>%
+  mutate(
+    Z_Bin   = factor(Z_Bin, levels = z_labels),
+    Raw_Bin = factor(Raw_Bin, levels = raw_labels)
+  )
+
+common_theme <- theme_minimal() +
+  theme(
+    axis.text.x.top = element_text(angle = 45, vjust = 0, hjust = 0, face = "bold", size = 10),
+    axis.text.y = element_text(size = 8),
+    panel.grid.major.x = element_line(color = "grey90"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    legend.position = "right"
+  )
+z_colors <- c(
+  "< -1.5"     = "blue",
+  "-1.5 to -1" = "#4393c3",
+  "-1 to -0.5"  = "#a1ccf0",
+  "-0.5 to 0.5"   = "light grey",
+  "0.5 to 1"   = "#ffbdbd",
+  "1 to 1.5"  = "#f76a6a",
+  "> 1.5"      = "#a80a02"
+)
+
+p3 <- ggplot(plot_data_subcell, aes(x = GROUP, y = Protein)) +
+  geom_point(aes(size = PctDetected, fill = Z_Bin), shape = 21, color = "white") +
+  scale_fill_manual(values = z_colors, name = "Z-Score", drop = FALSE) +
+  scale_size_continuous(range = c(0, 6), labels = scales::percent, name = "% Detected") +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(labels = y_axis_labels_subcell) +
+  labs(title = "Protein Expression (Z-Score) — Subcell List", x = "", y = "") +
+  common_theme +
+  coord_fixed(ratio = 0.5)
+
+print(p3)
+```
+
+```{r}
+ggsave(file.path(output_dir, "protein_bubble_zscore_coord0p5_10Feb26.pdf"), plot = p3, width = 10, height = 20)
+```
