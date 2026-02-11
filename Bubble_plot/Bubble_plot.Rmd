@@ -334,9 +334,3 @@ print(p3)
 ```{r}
 ggsave(file.path(output_dir, "protein_bubble_zscore_coord0p5_10Feb26.pdf"), plot = p3, width = 10, height = 20)
 ```
-
-
-```{r}
-
-```
-
