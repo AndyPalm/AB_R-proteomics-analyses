@@ -54,3 +54,7 @@ rsconnect/
 *.xlsx
 *.xls
 *.parquet
+*.raw
+*.mzML
+*.mzXML
+*.mgf
