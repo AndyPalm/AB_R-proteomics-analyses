@@ -253,5 +253,6 @@ If something doesn't work:
 2. Make sure the file exists at that path
 3. Check that you saved `config.R` after making changes
 4. Try running the script again
+5. Load this README.md into gemini.google.com, claude.ai, or chatgpt.com along with a screenshot of your directory tree and figure it out. Don't email me.
 
-Good luck! 🧬📊
+Good luck!
