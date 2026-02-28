@@ -1,25 +1,35 @@
 ---
 title: "AP2-133_136_150_correlation-plot"
+author: "Andrew Becker"
 output: html_document
 date: "2023-07-18"
+R_version: "4.2.2"
+description: "Correlation analysis comparing fold changes between two experimental datasets"
 ---
 
-```{r}
-library(pbapply)
-library(stringr)
+```{r setup, include=FALSE}
+# --- SETUP: Load required libraries ---
+library(dplyr)
 library(ggplot2)
-library(reshape2)
-library(stringr)
 library(ggrepel)
+library(here)
+library(pbapply)
 library(RColorBrewer)
 library(readxl)
+library(reshape2)
+library(stringr)
 library(tidyverse)
+
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
+
+# --- SETUP: Set working directory ---
 setwd("~/R_data/AP2-150_HepG2-wt-SRBI_expression/")
 data <- read.csv("AP2-133vs136_150-no-norm_merge_20june25.csv")
 ```
 
-```{r}
-# remove rows with missing values in the relevant columns
+```{r data_cleaning}
+# --- DATA CLEANING: Remove rows with missing values ---
 data_clean <- data[!is.na(data$foldchange.wt.vs.SRBI_expression) & 
                    !is.na(data$foldchange.HDL.chol.JF570.wt.vs.SRBI),]
 

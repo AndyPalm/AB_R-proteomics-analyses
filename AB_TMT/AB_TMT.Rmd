@@ -1,37 +1,42 @@
 ---
 title: "AB_TMT-analysis"
+author: "Andrew Becker"
 output: html_document
 date: "2025-07-14"
+R_version: "4.4.2"
+description: "TMT quantitative proteomics analysis with variance metrics and fold change calculations"
 ---
 
-```{r}
-# Load required libraries
-library(pbapply)
-library(stringr)
+```{r setup, include=FALSE}
+# --- SETUP: Load required libraries ---
+library(dplyr)
 library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+library(here)
+library(patchwork)
+library(readr)
+library(readxl)
+library(RColorBrewer)
 library(reshape2)
 library(stringr)
-library(ggrepel)
-library(RColorBrewer)
-library(readxl)
 library(tidyverse)
-library(viridis)
-library(patchwork)
-library(gridExtra)
-library(dplyr)
+
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
 library(tidyr)
-library(readr)
+library(viridis)
 ```
 
 
-```{r}
+```{r data_loading}
+# --- DATA LOADING ---
 setwd("~/R_data/AP2-296/AP2-296_TMT10-RTS/")
-#data <- read.csv("your_data_file.csv", stringsAsFactors = FALSE)
 data <- read_tsv("AP2-296_RTS_abundance_protein_None.tsv")
 ```
 
-
-```{r}
+```{r data_processing}
+# --- DATA PROCESSING: Select intensity columns and calculate statistics ---
 # Select only the intensity columns and protein identifiers
 intensity_data <- data %>%
   select(Index, Gene, control, Ctx1:Ctx3, ALO1:ALO3, Olya1:Olya3)
@@ -142,7 +147,8 @@ variance_assessment <- summary_results %>%
 head(variance_assessment)
 ```
 
-```{r}
+```{r export}
+# --- EXPORT RESULTS ---
 write.csv(summary_results, "AP2-296_TMT10-RTS__summary.csv", row.names = FALSE)
 ```
 

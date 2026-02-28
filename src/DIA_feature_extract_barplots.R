@@ -49,7 +49,7 @@ plot_top4_features <- function(data, gene_name, output_dir) {
     ) +
     
     # Zoom Y-axis
-    coord_cartesian(ylim = c(16, 19)) +
+    coord_cartesian(ylim = c(14, 20)) +
     
     # Aesthetics
     theme_bw() +
@@ -68,7 +68,7 @@ plot_top4_features <- function(data, gene_name, output_dir) {
   
   # 5. Save as PDF
   safe_name <- gsub("[^[:alnum:]]", "_", gene_name)
-  filename <- file.path(output_dir, paste0("296_Barplot_Top4_", safe_name, ".pdf"))
+  filename <- file.path(output_dir, paste0("12Feb26_339B_Barplot_Top4_", safe_name, ".pdf"))
   
   ggsave(filename, plot = p, width = 5, height = 6)
   message(paste("Saved plot to:", filename))

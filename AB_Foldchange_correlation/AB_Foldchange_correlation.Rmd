@@ -1,24 +1,35 @@
 ---
 title: "Sample_Correlations_AB"
+author: "Andrew Becker"
 output: html_document
 date: "2025-11-30"
+R_version: "4.4.2"
+description: "Compares fold changes between two independent experimental runs or datasets. Calculates Pearson and Spearman correlation metrics and generates scatter plots to assess reproducibility and consistency of quantification across replicates."
 ---
-This file is used to generate 'correlation plots', what I use as shorthand for: two-dimensional graphs that plot the foldchange for a given protein between two runs, across all the proteins in the sample
-```{r}
-library(readxl)
-library(tidyverse)
+
+This file is used to generate 'correlation plots': two-dimensional graphs that plot the foldchange for a given protein between two runs, across all the proteins in the sample.
+
+```{r setup, include=FALSE}
+# --- SETUP: Load required libraries ---
 library(broom)
-library(pbapply)
-library(stringr)
+library(dplyr)
 library(ggplot2)
+library(ggrepel)
+library(here)
+library(pbapply)
+library(RColorBrewer)
+library(readxl)
 library(reshape2)
 library(stringr)
-library(ggrepel)
-library(RColorBrewer)
-library(dplyr)
+library(tidyverse)
+
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
 ```
-Use this chunk for the 'comparison_results' from MSstats
-```{r}
+
+```{r data_loading_msstats}
+# --- DATA LOADING: MSstats comparison results ---
+# Use this chunk for the 'comparison_results' from MSstats
 run1_file <- "339B-top4-features_comparison-results_imputed_v2.csv"
 run2_file <- "339B_reruns-top4-features_comparison-results_imputed.csv"
 
@@ -39,9 +50,11 @@ run2 <- read_csv(
     log2FC = col_character()
   )
 )
+```
 
-## 2. Cleaning function: recode #NAME? and Inf, drop unusable comparisons --
-
+```{r data_cleaning}
+# --- DATA CLEANING ---
+# Recode #NAME? and Inf values, drop unusable comparisons
 clean_fc <- function(df) {
   df %>%
     select(Protein, Label, log2FC, issue, MissingPercentage, ImputationPercentage) %>%
@@ -59,14 +72,17 @@ clean_fc <- function(df) {
 
 run1_clean <- clean_fc(run1) %>% rename(log2FC_run1 = log2FC)
 run2_clean <- clean_fc(run2) %>% rename(log2FC_run2 = log2FC)
+```
 
-## 3. Join on Protein + Label ---------------------------------------------
-
+```{r data_processing}
+# --- DATA PROCESSING ---
+# Join runs on Protein + Label
 fc_pairs <- inner_join(run1_clean, run2_clean,
                        by = c("Protein", "Label"))
+```
 
-## 4. Overall correlations -------------------------------------------------
-
+```{r analysis}
+# --- ANALYSIS: Correlation statistics ---
 pearson_r  <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "pearson")
 spearman_r <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "spearman")
 
@@ -78,9 +94,10 @@ coef(lm(log2FC_run2 ~ log2FC_run1, data = fc_pairs))
 
 summary(fit)$r.squared
 summary(fit)$adj.r.squared
+```
 
-## 5. Global scatterplot of log2FC between runs ---------------------------
-
+```{r visualization}
+# --- VISUALIZATION: Global scatterplot of log2FC between runs ---
 p_all <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
   geom_point(alpha = 0.4, size = 1) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
@@ -102,8 +119,7 @@ p_all <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
 
 p_all
 
-## 6. Optional: one panel per contrast (Label) ----------------------------
-
+# --- VISUALIZATION: One panel per contrast (Label) ---
 p_by_label <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
   geom_point(alpha = 0.4, size = 0.8) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
@@ -116,69 +132,69 @@ p_by_label <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
   theme_bw()
 
 p_by_label
-
 ```
 
-```{r}
+```{r export_msstats}
+# --- EXPORT: Save MSstats correlation plots ---
 ggsave("global_correlation_FPA.png", plot = p_all, width = 5, height = 4, dpi = 300)
 ggsave("correlation-by-group_FPA.png", plot = p_by_label, width = 6, height = 5, dpi = 300)
 ```
 
-Use this chunk for the 'DE_results' from FragPipe-Analyst
-```{r}
+```{r data_loading_fpa}
+# --- DATA LOADING: FragPipe-Analyst DE results ---
+# Use this chunk for the 'DE_results' from FragPipe-Analyst
 run1_file <- "DE_results_FPA_initial.csv"
 run2_file <- "DE_results_FPA_reruns.csv"
 
-## Read everything as character so we don't lose '#NAME?' / 'Inf' info
+# Read everything as character so we don't lose '#NAME?' / 'Inf' info
 run1 <- read_csv(run1_file, col_types = cols(.default = col_character()))
 run2 <- read_csv(run2_file, col_types = cols(.default = col_character()))
+```
 
-## 2. Clean + reshape: wide -> long, recode special log2FC values ---------
-
+```{r data_cleaning_fpa}
+# --- DATA CLEANING: FragPipe-Analyst format ---
+# Clean + reshape: wide -> long, recode special log2FC values
 clean_fc <- function(df) {
   df %>%
-    ## Simplify column names for later use
     rename(
       Protein = `Protein ID`,
       Gene    = `Gene Name`
     ) %>%
-    ## One row per Protein × contrast
+    # One row per Protein x contrast
     pivot_longer(
       cols = ends_with("log2 fold change"),
       names_to = "Label",
-      names_pattern = "(.*)_log2 fold change",   # strip the suffix
+      names_pattern = "(.*)_log2 fold change",
       values_to = "log2FC"
     ) %>%
-    ## Recode #NAME? and Inf, then convert to numeric
+    # Recode #NAME? and Inf, then convert to numeric
     mutate(
       log2FC = case_when(
-        log2FC == "#NAME?" ~ "-10",   # treat as strong negative FC
-        log2FC == "Inf"    ~ "10",    # clamp +Inf
-        log2FC == "-Inf"   ~ "-10",   # clamp -Inf
+        log2FC == "#NAME?" ~ "-10",
+        log2FC == "Inf"    ~ "10",
+        log2FC == "-Inf"   ~ "-10",
         TRUE               ~ log2FC
       ),
       log2FC = as.numeric(log2FC)
     ) %>%
-    ## Keep only finite fold-changes
     filter(!is.na(log2FC))
 }
 
 run1_long <- clean_fc(run1) %>% rename(log2FC_run1 = log2FC)
 run2_long <- clean_fc(run2) %>% rename(log2FC_run2 = log2FC)
+```
 
-## 3. Join runs on Protein + Label (and keep Gene for reference) -----------
-
+```{r data_processing_fpa}
+# --- DATA PROCESSING: Join runs on Protein + Label ---
 fc_pairs <- inner_join(
   run1_long,
   run2_long,
   by = c("Protein", "Gene", "Label")
 )
+```
 
-## Optional: restrict to one contrast, e.g.:
-# fc_pairs <- fc_pairs %>% filter(Label == "ALOD4DF_vs_ALOD4UF")
-
-## 4. Correlations ---------------------------------------------------------
-
+```{r analysis_fpa}
+# --- ANALYSIS: Correlation statistics for FragPipe-Analyst data ---
 pearson_r  <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "pearson")
 spearman_r <- cor(fc_pairs$log2FC_run1, fc_pairs$log2FC_run2, method = "spearman")
 
@@ -189,13 +205,14 @@ fit <- lm(log2FC_run2 ~ log2FC_run1, data = fc_pairs)
 
 summary(fit)$r.squared
 summary(fit)$adj.r.squared
+```
 
-## 5. Global scatterplot of log2FC between runs ---------------------------
-
+```{r visualization_fpa}
+# --- VISUALIZATION: Global scatterplot for FragPipe-Analyst data ---
 p_all <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
   geom_point(alpha = 0.4, size = 1) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +  # 1:1 line
-  geom_smooth(method = "lm", se = FALSE) +                       # blue regression line
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_smooth(method = "lm", se = FALSE) +
   annotate(
     "text",
     x = min(fc_pairs$log2FC_run1, na.rm = TRUE),
@@ -213,8 +230,7 @@ p_all <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
 
 p_all
 
-## 6. Optional: one panel per contrast (Label) ----------------------------
-
+# --- VISUALIZATION: One panel per contrast ---
 p_by_label <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
   geom_point(alpha = 0.4, size = 0.8) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
@@ -228,4 +244,3 @@ p_by_label <- ggplot(fc_pairs, aes(x = log2FC_run1, y = log2FC_run2)) +
 
 p_by_label
 ```
-

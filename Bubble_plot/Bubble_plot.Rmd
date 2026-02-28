@@ -1,27 +1,33 @@
 ---
 title: "Bubble_plot"
+author: "Andrew Becker"
 output: html_document
 date: "2026-02-05"
+R_version: "4.4.2"
+description: "Creates bubble plots to visualize protein abundance across multiple treatment groups. Each bubble represents a protein's mean intensity in a specific condition, with bubble size proportional to detection rate and color indicating Z-score or raw intensity."
 ---
 
-```{r}
-library(tidyverse)
-library(pbapply)
-library(stringr)
-library(ggplot2)
-library(reshape2)
-library(stringr)
-library(ggrepel)
-library(RColorBrewer)
-library(readxl)
-library(dplyr)
-library(readxl)
-library(janitor)
-library(here)
+```{r setup, include=FALSE}
+# --- SETUP: Load required libraries and define paths ---
 library(arrow)
 library(beeswarm)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(here)
+library(janitor)
+library(pbapply)
+library(RColorBrewer)
+library(readxl)
+library(reshape2)
 library(scales)
+library(stringr)
+library(tidyverse)
 
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
+
+# --- Hardcoded Box paths (note: future work to centralize in src/config.R) ---
 box_root <- "C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD"
 ref_dir  <- file.path(box_root, "Reference_dbs")
 exp1_dir <- file.path(box_root, "AP2-339_HAECs_DF-UF_ALOD4_OLyA", "01_Input_Search_Results")
@@ -31,9 +37,10 @@ if (!dir.exists(output_dir)) {dir.create(output_dir, recursive = TRUE)
 }
 ```
 
-
-```{r}
-# 1. Read protein-level file
+```{r data_loading}
+# --- DATA LOADING ---
+# Read protein-level file, converting CSV to Parquet for efficient processing
+# Note: CSV-to-Parquet pattern is a candidate for extraction to src/functions.R
 
 # Define paths for the source CSV and the target Parquet file
 csv_source <- file.path(exp1_dir, "339B-top4-features_protein-level-data_impute.csv")
@@ -42,14 +49,8 @@ pq_target  <- file.path(parquet_files, "339B-top4-features_protein-level-data_im
 # Conditional Logic: Only convert if the parquet file doesn't already exist
 if (!file.exists(pq_target)) {
   message("Parquet file not found. Reading CSV and converting... (This may take a moment)")
-  
-  # read_csv_arrow is often faster than readr::read_csv for massive files
   temp_df <- arrow::read_csv_arrow(csv_source) 
-  
-  # Write to parquet
   arrow::write_parquet(temp_df, pq_target)
-  
-  # Clean up memory immediately
   rm(temp_df)
   gc() 
   message("Conversion complete.")
@@ -60,30 +61,28 @@ if (!file.exists(pq_target)) {
 # Read the optimized Parquet file
 exp1.protein <- arrow::read_parquet(pq_target)
 
-# 2. load UniProt accession <-> Gene mapping file and apply to features
+# Load UniProt accession <-> Gene mapping file and apply to features
+# Note: UniProt lookup pattern is a candidate for extraction to src/functions.R
 df.labels <- read_excel(file.path(ref_dir, "uniprot_hs_29may25.xlsx"))
-lookup <- df.labels %>% select(ProteinID, Gene) # Tidyverse style selection
+lookup <- df.labels %>% select(ProteinID, Gene)
 exp1.protein <- exp1.protein %>%
   left_join(lookup, by = c("Protein" = "ProteinID")) %>%
-  relocate(Gene, .after = Protein) # Move Gene column to the front for easier viewing
+  relocate(Gene, .after = Protein)
 
 # Verify the merge
 head(exp1.protein)
 ```
 
-```{r}
-# -------------------------------------------------------------------------
-# DATA PROCESSING
-# -------------------------------------------------------------------------
-
-# A. Complete the dataframe to handle missing replicates
+```{r data_processing}
+# --- DATA PROCESSING ---
+# Complete the dataframe to handle missing replicates
 df_full <- exp1.protein %>%
   group_by(GROUP) %>%
   mutate(TotalRepsInGroup = n_distinct(SUBJECT)) %>% 
   ungroup() %>%
   tidyr::complete(nesting(Protein, Gene), nesting(GROUP, SUBJECT, TotalRepsInGroup))
 
-# B. Calculate Aggregated Stats
+# Calculate Aggregated Stats
 df_agg <- df_full %>%
   group_by(Protein, GROUP) %>%
   dplyr::summarize(
@@ -99,7 +98,7 @@ df_agg <- df_full %>%
     PlotLabel = ifelse(is.na(Gene), Protein, Gene) 
   )
 
-# C. Calculate Z-Scores
+# Calculate Z-Scores per protein across groups
 df_agg <- df_agg %>%
   group_by(Protein) %>%
   mutate(
@@ -108,22 +107,21 @@ df_agg <- df_agg %>%
     ZScore = (MeanIntensity - row_mean) / row_sd
   ) %>%
   ungroup()
+```
 
-# -------------------------------------------------------------------------
-# 2. MARKER SELECTION & SORTING (UPDATED)
-# -------------------------------------------------------------------------
-
-# A. Identify the "Max Group" for each protein
+```{r data_processing_selection}
+# --- DATA PROCESSING: Marker selection and sorting ---
+# Identify the "Max Group" for each protein and select top N per group
 target_groups <- setdiff(unique(df_agg$GROUP), c("DF", "UF"))
 
 protein_ranking <- df_agg %>%
   filter(GROUP %in% target_groups) %>%
-  filter(is.na(Gene) | !str_detect(Gene, "^KRT")) %>% #filter keratins
+  filter(is.na(Gene) | !str_detect(Gene, "^KRT")) %>% # filter keratins
   group_by(Protein) %>%
   slice_max(ZScore, n = 1, with_ties = FALSE) %>%
   select(Protein, MaxGroup = GROUP, MaxZ = ZScore)
 
-# B. Select Top N proteins per group
+# Select Top N proteins per group
 top_n_per_group <- 15 
 
 selected_proteins <- protein_ranking %>%
@@ -132,19 +130,19 @@ selected_proteins <- protein_ranking %>%
   ungroup() %>%
   arrange(MaxGroup, MaxZ)
 
-# C. Filter Data & Apply Aesthetic Ordering
+# Filter Data & Apply Aesthetic Ordering
 plot_data <- df_agg %>%
   filter(Protein %in% selected_proteins$Protein)
 
-# --- Set Column Order ---
+# Set Column Order
 col_order <- c("ALOD4DF", "OlyADF", "ALOD4UF", "OlyAUF", "DF", "UF")
 plot_data$GROUP <- factor(plot_data$GROUP, levels = col_order)
 
-# --- Set Row Order ---
+# Set Row Order
 plot_data$Protein <- factor(plot_data$Protein, levels = unique(selected_proteins$Protein))
 y_axis_labels <- setNames(plot_data$PlotLabel, plot_data$Protein)
 
-# D. Binning
+# Binning for color scales
 z_breaks <- c(-Inf, -2, -1, 0, 1, 2, Inf)
 z_labels <- c("< -2", "-2 to -1", "-1 to 0", "0 to 1", "1 to 2", "> 2")
 raw_breaks <- c(-Inf, 15, 18, 21, 24, 27, Inf)
@@ -155,19 +153,18 @@ plot_data <- plot_data %>%
     Z_Bin = cut(ZScore, breaks = z_breaks, labels = z_labels),
     Raw_Bin = cut(MeanIntensity, breaks = raw_breaks, labels = raw_labels)
   )
+```
 
-# -------------------------------------------------------------------------
-# 3. PLOTTING (UPDATED)
-# -------------------------------------------------------------------------
-
-# --- UPDATE: Theme modified to remove horizontal grid lines ---
+```{r visualization}
+# --- VISUALIZATION: Bubble plots ---
+# Note: common_theme is a candidate for extraction to src/functions.R as theme_custom()
 common_theme <- theme_minimal() +
   theme(
     axis.text.x.top = element_text(angle = 45, vjust = 0, hjust = 0, face = "bold", size = 10),
     axis.text.y = element_text(size = 8),
-    panel.grid.major.x = element_line(color = "grey90"), # Keep vertical lines
-    panel.grid.major.y = element_blank(),                # Remove horizontal lines
-    panel.grid.minor = element_blank(),                  # Remove minor lines
+    panel.grid.major.x = element_line(color = "grey90"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
     panel.border = element_rect(color = "black", fill = NA, size = 1),
     legend.position = "right"
   )
@@ -180,11 +177,10 @@ z_colors <- c(
   "1 to 2"   = "#f76a6a",
   "> 2"      = "purple"
 )
-#
-# --- P1: Z-SCORE PLOT WITH MANUAL COLORS ---
+
+# P1: Z-SCORE PLOT WITH MANUAL COLORS
 p1 <- ggplot(plot_data, aes(x = GROUP, y = Protein)) +
   geom_point(aes(size = PctDetected, fill = Z_Bin), shape = 21, color = "white") +
-  # Use scale_fill_manual instead of scale_fill_brewer
   scale_fill_manual(
     values = z_colors, 
     name = "Z-Score", 
@@ -197,7 +193,7 @@ p1 <- ggplot(plot_data, aes(x = GROUP, y = Protein)) +
   common_theme +
   coord_fixed(ratio = 0.5)
 
-# --- P2: RAW INTENSITY PLOT ---
+# P2: RAW INTENSITY PLOT
 p2 <- ggplot(plot_data, aes(x = GROUP, y = Protein)) +
   geom_point(aes(size = PctDetected, fill = Raw_Bin), shape = 21, color = "black") +
   scale_fill_viridis_d(option = "magma", name = "Log2 Intensity", drop=FALSE) +
@@ -212,14 +208,14 @@ print(p1)
 print(p2)
 ```
 
-
-```{r}
+```{r export_main}
+# --- EXPORT: Save main bubble plots ---
 ggsave(file.path(output_dir, "protein_bubble_zscore_coord0p5_9Feb26.pdf"), plot = p1, width = 10, height = 12)
 ggsave(file.path(output_dir, "protein_bubble_intensity_coord0p5.pdf"), plot = p2, width = 10, height = 12, bg = "white")
 ```
 
-```{r}
-# --- P3: plotting only PM/surface-annotated proteins ---
+```{r data_processing_subcell}
+# --- DATA PROCESSING: PM/surface-annotated protein subset ---
 subcell_list <- read_excel("C:/Users/andbp/Documents/R_data/R_local/AP2-296/analysis/PM_surface_proteinID.xlsx")
 
 # Restrict df_agg to proteins present in subcell_list
@@ -229,11 +225,10 @@ df_agg_subcell <- df_agg %>%
 # Define target groups (exclude DF/UF)
 target_groups <- setdiff(unique(df_agg_subcell$GROUP), c("DF", "UF"))
 
-# For each protein, find the max and min ZScore across target groups,
-# compute the spread (difference), and record which groups achieve them.
+# For each protein, find the max and min ZScore across target groups
 protein_spread_ranking <- df_agg_subcell %>%
   filter(GROUP %in% target_groups) %>%
-  filter(is.na(Gene) | !str_detect(Gene, "^KRT")) %>%  # filter keratins
+  filter(is.na(Gene) | !str_detect(Gene, "^KRT")) %>%
   group_by(Protein) %>%
   summarise(
     MaxZ = suppressWarnings(max(ZScore, na.rm = TRUE)),
@@ -243,7 +238,6 @@ protein_spread_ranking <- df_agg_subcell %>%
     MinGroup = GROUP[which.min(ZScore)][1],
     .groups = "drop"
   ) %>%
-  # guard against proteins with all-NA ZScore (max/min become -Inf/Inf)
   filter(is.finite(MaxZ), is.finite(MinZ))
 
 # Select top N proteins per MaxGroup by largest ZDiff
@@ -255,30 +249,24 @@ selected_proteins_subcell <- protein_spread_ranking %>%
   ungroup() %>%
   arrange(MaxGroup, desc(ZDiff))
 
-# (optional) pull the full df_agg rows for plotting/reporting
-df_agg_selected_subcell <- df_agg_subcell %>%
-  semi_join(selected_proteins_subcell, by = "Protein")
-
-# plot_data_subcell: restrict to the selected subcell proteins (from prior step)
+# Filter plot data to selected subcell proteins
 plot_data_subcell <- df_agg_subcell %>%
   filter(Protein %in% selected_proteins_subcell$Protein)
 ```
 
-
-```{r}
-# --- Set Column Order ---
+```{r visualization_subcell}
+# --- VISUALIZATION: Subcell subset bubble plot ---
+# Set Column Order
 col_order <- c("ALOD4DF", "OlyADF", "ALOD4UF", "OlyAUF", "DF", "UF")
 plot_data_subcell <- plot_data_subcell %>%
   mutate(GROUP = factor(GROUP, levels = col_order))
 
-# --- Set Row Order ---
-# Keep the same ordering as selected_proteins_subcell (already arranged by MaxGroup, desc(ZDiff))
+# Set Row Order
 protein_order <- selected_proteins_subcell$Protein
 plot_data_subcell <- plot_data_subcell %>%
   mutate(Protein = factor(Protein, levels = protein_order))
 
-# Axis labels mapping (Protein factor -> PlotLabel)
-# Use distinct() so you only keep one label per protein
+# Axis labels mapping
 y_axis_labels_subcell <- plot_data_subcell %>%
   distinct(Protein, PlotLabel) %>%
   { setNames(.$PlotLabel, .$Protein) }
@@ -288,14 +276,8 @@ z_labels <- c("< -1.5", "-1.5 to -1", "-1 to -0.5", "-0.5 to 0.5", "0.5 to 1", "
 
 plot_data_subcell <- plot_data_subcell %>%
   mutate(
-    Z_Bin   = cut(ZScore,        breaks = z_breaks,   labels = z_labels),
-    Raw_Bin = cut(MeanIntensity, breaks = raw_breaks, labels = raw_labels)
-  )
-#fix factor levels
-plot_data_subcell <- plot_data_subcell %>%
-  mutate(
-    Z_Bin   = factor(Z_Bin, levels = z_labels),
-    Raw_Bin = factor(Raw_Bin, levels = raw_labels)
+    Z_Bin   = factor(cut(ZScore, breaks = z_breaks, labels = z_labels), levels = z_labels),
+    Raw_Bin = factor(cut(MeanIntensity, breaks = raw_breaks, labels = raw_labels), levels = raw_labels)
   )
 
 common_theme <- theme_minimal() +
@@ -308,6 +290,7 @@ common_theme <- theme_minimal() +
     panel.border = element_rect(color = "black", fill = NA, size = 1),
     legend.position = "right"
   )
+
 z_colors <- c(
   "< -1.5"     = "blue",
   "-1.5 to -1" = "#4393c3",
@@ -331,6 +314,7 @@ p3 <- ggplot(plot_data_subcell, aes(x = GROUP, y = Protein)) +
 print(p3)
 ```
 
-```{r}
+```{r export_subcell}
+# --- EXPORT: Save subcell bubble plot ---
 ggsave(file.path(output_dir, "protein_bubble_zscore_coord0p5_10Feb26.pdf"), plot = p3, width = 10, height = 20)
 ```

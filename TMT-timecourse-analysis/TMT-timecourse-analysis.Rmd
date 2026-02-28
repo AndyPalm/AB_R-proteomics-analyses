@@ -1,32 +1,38 @@
 ---
-title: "Volcano_plots_FP"
+title: "TMT_timecourse_analysis"
+author: "Andrew Becker"
 output: html_document
+date: "2025-01-27"
+R_version: "4.4.2"
+description: "Processes TMT quantitative proteomics data from a timecourse experiment. Calculates kinetic parameters including rates of change, maximum abundance, and time-to-half-maximum (T50) for each protein across multiple timepoints."
 ---
-Aggregate the data; takes several minutes
+
 ```{r setup, include=FALSE}
-library(pbapply)
-library(stringr)
+# --- SETUP: Load required libraries ---
+library(cluster)
+library(dplyr)
+library(factoextra)
 library(ggplot2)
-library(reshape2)
-library(stringr)
 library(ggrepel)
+library(here)
+library(minpack.lm)
+library(pbapply)
+library(purrr)
 library(RColorBrewer)
 library(readxl)
+library(reshape2)
+library(stringr)
 library(tidyverse)
-library(dplyr)
-library(minpack.lm)
-library(purrr)
-library(cluster)
-library(factoextra)
 
-#fasta<-readAAStringSet("/Users/andrewpalmer/Desktop/R_data/AP_2_ip2_ip2_data_kbackus_database__Uniprot_Human_18432CCDS_canonical_contaminant_01-01-2020_reversed.fasta", format = "fasta", use.names = T)   ##reference database path
-setwd("~/R_data/AP2-282_Ctx-DBF_timecourse_TMT/") ##folder with Fragpipe Output
-#fnames<-list.files()[c(10)] ##change to how many files you have in folder [1:X]
-#files = lapply(paste(fnames,"AP2-277_FP22-no-norm_raw-intensity-impute.csv", sep= "/"), read.csv, sep = ",")
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
+
+setwd("~/R_data/AP2-282_Ctx-DBF_timecourse_TMT/")
 ```
 
-
-```{r}
+```{r data_loading}
+# --- DATA LOADING ---
+# Read TMT abundance data from FragPipe output
 data <- read.table("abundance_protein_MD.tsv", sep = "\t", header = FALSE, na.strings = "NA", stringsAsFactors = FALSE)
 data <- data[, c(1, 3, 6:15)]
 data <- data[-1, ]
@@ -36,8 +42,9 @@ data <- data %>%
   mutate(across(-c(ProteinID, Gene), as.numeric))
 ```
 
-Create a new dataframe with averaged values
-```{r}
+```{r data_processing_average}
+# --- DATA PROCESSING: Create averaged dataframe ---
+# Average replicate measurements for each timepoint
 averaged_data <- data %>%
   mutate(
     `0` = ifelse(is.na(`0-1`) & is.na(`0-2`), 0, rowMeans(cbind(`0-1`, `0-2`), na.rm = TRUE)),
@@ -50,9 +57,9 @@ averaged_data <- data %>%
 data2 <- averaged_data
 ```
 
-Calculating various quantities to characterize the data
-```{r}
-#rates of change
+```{r data_processing_kinetics}
+# --- DATA PROCESSING: Calculate kinetic quantities ---
+# Rates of change between consecutive timepoints
 data2 <- data2 %>%
   mutate(
     rate_0_30 = (`30` - `0`) / 30,
@@ -61,7 +68,7 @@ data2 <- data2 %>%
     rate_120_360 = (`360` - `120`) / 240
   )
 
-#max abundance
+# Max abundance and time of max
 data2 <- data2 %>%
   mutate(
     max_abundance = pmax(`30`, `60`, `120`, `360`, na.rm = TRUE),
@@ -73,13 +80,13 @@ data2 <- data2 %>%
     )
   )
 
-#max abundance relative to background
+# Max abundance relative to background (log2 fold change)
 data2 <- data2 %>%
   mutate(
     log2_fold_change = max_abundance - `0`
   )
 
-#time to half-max (TD50)
+# Time to half-max (TD50) via spline interpolation
 compute_t50 <- function(time_point, abundance) {
   valid_data <- na.omit(data.frame(time_point, abundance)) %>%
     distinct() %>%
@@ -93,7 +100,6 @@ compute_t50 <- function(time_point, abundance) {
   }
 }
 
-# Apply the function efficiently using rowwise for each protein
 data_long <- data2 %>%
   pivot_longer(cols = `0`:`360`, names_to = "time_point", values_to = "abundance") %>%
   mutate(time_point = as.numeric(time_point)) %>%
@@ -105,22 +111,18 @@ data_long <- data2 %>%
     .groups = "drop"
   )
 
-# Join the result back to the main data
 data2 <- left_join(data2, data_long %>% select(ProteinID, half_max, t50), by = "ProteinID")
 
-
-
-#AUC via trapezoidal approx
+# AUC via trapezoidal approximation
 time_points <- c(0, 30, 60, 120, 360)
 data2 <- data2 %>%
   rowwise() %>%
   mutate(
     auc = if (all(is.na(c_across(`0`:`360`)))) 0 else {
       values <- c_across(`0`:`360`)
-      # Remove NAs for trapezoidal rule
       valid_indices <- which(!is.na(values))
       if (length(valid_indices) < 2) {
-        0  # If insufficient points for trapezoidal rule, return 0
+        0
       } else {
         valid_times <- time_points[valid_indices]
         valid_values <- values[valid_indices]
@@ -131,25 +133,23 @@ data2 <- data2 %>%
   ungroup()
 ```
 
-exponential fit parameters A*(1-e^(-kt))
-```{r}
+```{r analysis_exponential}
+# --- ANALYSIS: Exponential fit parameters A*(1-e^(-kt)) ---
 # Helper function to identify meaningful zeros
 filter_valid_zeros <- function(time_point, abundance) {
   df <- data.frame(time_point, abundance)
   
-  # Tag zeros
   df <- df %>%
     mutate(
       zero_flag = ifelse(abundance == 0, 1, 0),
-      group_id = cumsum(c(0, diff(zero_flag)) * (zero_flag == 0)) # Group consecutive zeros
+      group_id = cumsum(c(0, diff(zero_flag)) * (zero_flag == 0))
     )
   
-  # Keep the last zero of any consecutive group, remove isolated zeros
   df <- df %>%
     group_by(group_id) %>%
     filter(
-      (zero_flag == 1 & n() > 1 & row_number() == n()) |  # Keep last of consecutive zeros
-        zero_flag == 0                                    # Keep non-zero values
+      (zero_flag == 1 & n() > 1 & row_number() == n()) |
+        zero_flag == 0
     ) %>%
     ungroup() %>%
     select(time_point, abundance)
@@ -160,7 +160,7 @@ filter_valid_zeros <- function(time_point, abundance) {
 fit_exponential <- function(time_point, abundance) {
   valid_data <- filter_valid_zeros(time_point, abundance)
   
-  if (nrow(valid_data) >= 3) {  # Need at least three points for a fit
+  if (nrow(valid_data) >= 3) {
     tryCatch({
       fit <- nls(abundance ~ a * exp(k * time_point), 
                  data = valid_data,
@@ -195,17 +195,16 @@ data2 <- data2 %>%
   select(-exponential_params_a, -exponential_params_k)
 ```
 
-heatmap
-```{r}
+```{r visualization_heatmap}
+# --- VISUALIZATION: Heatmap of protein abundance over time ---
 data_heatmap <- data2 %>%
   pivot_longer(cols = `0`:`360`, names_to = "time_point", values_to = "abundance") %>%
   mutate(time_point = as.numeric(time_point))
 
-
-ggplot(data_viz, aes(x = factor(time_point), y = ProteinID, fill = abundance)) +
+ggplot(data_heatmap, aes(x = factor(time_point), y = ProteinID, fill = abundance)) +
   geom_tile() +
   scale_fill_viridis_c(option = "C") +
-  scale_y_discrete(labels = NULL) +  # Remove y-axis data labels
+  scale_y_discrete(labels = NULL) +
   labs(
     title = "Protein Abundance Over Time (Heatmap)",
     x = "Time (seconds)",
@@ -215,33 +214,27 @@ ggplot(data_viz, aes(x = factor(time_point), y = ProteinID, fill = abundance)) +
   theme_minimal() +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks.y = element_blank()  # Remove y-axis ticks
+    axis.ticks.y = element_blank()
   )
-
-
 ```
 
-```{r}
-# Prepare data for clustering (remove unnecessary columns)
+```{r analysis_clustering}
+# --- ANALYSIS: K-means clustering of temporal profiles ---
 cluster_data <- data2 %>%
   select(`0`, `30`, `60`, `120`, `360`) %>%
   drop_na()
 
-# Perform K-means clustering (choose 3 clusters for example)
 set.seed(42)
 kmeans_result <- kmeans(cluster_data, centers = 3, nstart = 20)
 
-# Add cluster information to data2
 data2 <- data2 %>%
   mutate(cluster = factor(kmeans_result$cluster))
 
-# Save relevant rows for plotting in 'cluster_plot'
 cluster_plot <- data2 %>%
   select(ProteinID, `0`, `30`, `60`, `120`, `360`, cluster) %>%
   pivot_longer(cols = `0`:`360`, names_to = "time_point", values_to = "abundance") %>%
   mutate(time_point = as.numeric(time_point))
 
-# Plot cluster profiles
 ggplot(cluster_plot,
        aes(x = time_point, y = abundance, color = cluster, group = ProteinID)) +
   geom_line(alpha = 0.7) +
@@ -252,21 +245,18 @@ ggplot(cluster_plot,
     color = "Cluster"
   ) +
   theme_minimal()
-
-
 ```
 
-```{r}
-# Filter proteins based on fit error threshold (example: fit error < 0.5)
+```{r visualization_exponential_curves}
+# --- VISUALIZATION: Protein curves based on exponential fit ---
+# Filter proteins based on fit error threshold
 filtered_data <- data2 %>% filter(exponential_params_fit_error < 0.01)
 
-# Pivot the data to a long format for plotting time vs abundance
 plot_data <- filtered_data %>%
   select(ProteinID, `0`, `30`, `60`, `120`, `360`, exponential_params_a.a, exponential_params_k.k) %>%
   pivot_longer(cols = `0`:`360`, names_to = "time_point", values_to = "abundance") %>%
   mutate(time_point = as.numeric(time_point))
 
-# Plot protein abundance curves
 ggplot(plot_data, aes(x = time_point, y = abundance, group = ProteinID)) +
   geom_point(color = "blue", alpha = 0.6) +
   geom_line(data = plot_data %>%
@@ -280,82 +270,17 @@ ggplot(plot_data, aes(x = time_point, y = abundance, group = ProteinID)) +
   ) +
   theme_minimal() +
   theme(legend.position = "none")
-
-
 ```
 
-
-
-
-
-
-
-
-
-
-
-
-
-#selecting which proteins to label in volcano plot. Run this first before setting protein subset groups
-```{r} 
-#requires that your file being read has column header "ProteinID" in col 1 with all the uniprot accession identifiers (e.g. P49790) and "Selected_labels" (with a capital 'S') in col 2 with the label you want for that protein, typically gene name. 
-protein_labels <- read.csv("~/R_data/Protein_lists/PM_proteinID.csv")
-results2 <- results2 %>%
-  left_join(protein_labels, by = "ProteinID") %>%
-  mutate(selected_labels = ifelse(is.na(Selected_labels), selected_labels, Selected_labels)) %>% 
-  select(-Selected_labels)
-```
-
-#alternative labeling strategy: provide excel file with one column containing Uniprot accession numbers with the header 'ProteinID' and the label will be populated as the gene from the original dataframe (i.e. it uses the Gene label that already exists in the data). Useful if you don't have custom labels for any of your proteins
-```{r}
-protein_labels <- read_excel("~/R_data/Protein_lists/ALOD4_selected_labels.xlsx")
-results2 <- results2 %>%
-  mutate(matching_protein = ProteinID %in% protein_labels$ProteinID) %>%
-  mutate(selected_labels = ifelse(matching_protein, label, selected_labels)) %>%
-  select(-matching_protein)
-```
-
-
-Setting protein subset groups (which proteins you want colored differently on volcano, i.e. all mito proteins, cholesterol-binding proteins, etc.)
-```{r} 
-#labeling nucleoporins
-NUP_list <- read.csv("~/R_data/Protein_lists/PM_proteinID.csv")
-results2[!results2$ProteinID%in%NUP_list$`ProteinID`,]$label<- NA
-results2[results2$ProteinID%in%NUP_list$`ProteinID`,]$diffexpressed<-paste("NUP",results2[results2$ProteinID%in%NUP_list$`ProteinID`,]$diffexpressed,sep="_")
-results2$diffexpressed<-factor(results2$diffexpressed,levels=c("NO","UP","NUP_NO","NUP_UP","NUP_DOWN","DOWN"))
-results2$label <- as.character(results2$label)
-results2$label[which(results2$diffexpressed == "NO")] <- NA
-results2$label <- factor(results2$label)
-```
-
-
-```{r}
-#labeling cholesterol-binding proteins
-CBP_list <- read.csv("~/R_data/chol-related-proteins_AB_GO180.csv")
-results[!results$protein%in%CBP_list$`ProteinID`,]$label<- NA
-results[results$protein%in%CBP_list$`ProteinID`,]$diffexpressed<-paste("CBP",results[results$protein%in%CBP_list$`ProteinID`,]$diffexpressed,sep="_")
-results$diffexpressed<-factor(results$diffexpressed,levels=c("NO","UP","CBP_NO","CBP_UP","CBP_DOWN","DOWN"))
-results$label[which(results$diffexpressed == "NO")] <- NA
-```
-
-
-```{r}
-#labeling Rohith's proteins
-rohith_list <- read_excel("~/Documents/UCLA/Backus_Lab/Proteomics_excel_files/Rohith_human-uniprot.xls")
-results[!results$protein%in%rohith_list$`ProteinID`,]$label<- NA
-results[results$protein%in%rohith_list$`ProteinID`,]$diffexpressed<-paste("rohith",results[results$protein%in%rohith_list$`ProteinID`,]$diffexpressed,sep="_")
-results$diffexpressed<-factor(results$diffexpressed,levels=c("NO","UP","rothith_NO","rohith_UP","rohith_DOWN","DOWN"))
-results$label[which(results$diffexpressed == "NO")] <- NA
-```
-
-Make the volcano plot
-```{r}
+```{r visualization_volcano}
+# --- VISUALIZATION: Volcano plot ---
+# Note: requires 'results2' dataframe with FC, p_value, diffexpressed, selected_labels columns
 volcano = ggplot(data = results2, aes(x = FC, y = -1*log10(p_value)))
 p <- volcano + geom_point(aes(col = diffexpressed), size = 1.0, alpha = 0.8) +
-    scale_color_manual(values = c("light grey", "#ED1C24", "light grey", "#ED1C24", "#3549a1", "#165e3a")) + ###can adjust the colors with hex codes or words. levels=c("NO","UP","CBP_NO","CBP_UP","CBP_DOWN","DOWN")
+    scale_color_manual(values = c("light grey", "#ED1C24", "light grey", "#ED1C24", "#3549a1", "#165e3a")) +
     geom_vline(xintercept = c(-0.5, 0.5), col = "black", linetype = "dashed") +
     geom_hline(yintercept = -log10(0.01), col = "black", linetype = "dashed") +
-    geom_label_repel(aes(label = selected_labels), segment.color = 'black', force = 10) + #this labels the list you designated above
+    geom_label_repel(aes(label = selected_labels), segment.color = 'black', force = 10) +
     theme_classic(base_size = 20) +
     labs(title = "", y = "", x = "") +
     theme(legend.position = "none") +
@@ -375,10 +300,8 @@ p <- p + geom_point(
 p
 ```
 
-
-```{r}
-saveRDS(p, file="AP2-148_A549_chol-POCA.rds")
+```{r export}
+# --- EXPORT: Save plots and results ---
 ggsave("AP2-277-TMT_no-norm_selected_labels_27jan25.png", width = 5, height = 6, dpi=1200) 
 write.csv(data2, file="AP2-282_TMT-analysis.csv",row.names = F)
 ```
-

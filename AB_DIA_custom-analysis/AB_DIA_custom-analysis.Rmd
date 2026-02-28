@@ -1,28 +1,39 @@
 ---
 title: "MSstats"
+author: "Andrew Becker"
 output: html_document
 date: "2025-04-01"
+R_version: "4.4.2"
+description: "Visualizes intensity distributions from MSstats model QC output. Creates histograms comparing protein abundance distributions between treatment groups, with stratification by protein subsets (e.g., cell surface vs. non-cell surface proteins)."
 ---
 
 ```{r setup, include=FALSE}
-library(pbapply)
-library(stringr)
+# --- SETUP: Load required libraries ---
+library(dplyr)
 library(ggplot2)
-library(reshape2)
-library(stringr)
 library(ggrepel)
+library(here)
+library(pbapply)
 library(RColorBrewer)
 library(readxl)
+library(reshape2)
+library(stringr)
 library(tidyverse)
-library(dplyr)
+
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
 ```
 
-```{r}
+```{r data_loading}
+# --- DATA LOADING ---
+# Read MSstats model QC output with fitted intensity values
 setwd("~/R_data/AP2-296/MSstats-DIAworkup10_search5_median-norm/")
 data <- read.csv("model_qc_search5__median-norm.csv")
 ```
 
-```{r}
+```{r data_processing}
+# --- DATA PROCESSING ---
+# Aggregate fitted intensities by protein and treatment group
 result <- data %>%
   # Group by Protein and GROUP (treatment group)
   group_by(Protein, GROUP) %>%
@@ -35,8 +46,8 @@ result <- data %>%
 print(result)
 ```
 
-```{r}
-# Create histograms for each treatment group
+```{r visualization_all}
+# --- VISUALIZATION: Histograms for all treatment groups ---
 ggplot(result, aes(x = mean_intensity)) +
   geom_histogram(bins = 30) +
   facet_wrap(~GROUP) +
@@ -45,7 +56,10 @@ ggplot(result, aes(x = mean_intensity)) +
        y = "Count",
        title = "Distribution of Mean Intensities by Treatment Group")
 ```
-```{r}
+
+```{r data_processing_subsets}
+# --- DATA PROCESSING: Protein subset filtering ---
+# Separate proteins into PM surface vs. non-PM surface categories
 proteins_of_interest <- read_excel("PM_surface-proteinID.xlsx") %>%
   pull(ProteinID)
 
@@ -63,9 +77,8 @@ cat("Number of PM Surface proteins found:", length(unique(PM_surface_proteins$Pr
 cat("Number of Non-PM Surface proteins:", length(unique(non_PM_surface_proteins$Protein)), "\n")
 ```
 
-
-```{r}
-# Create the combined plot
+```{r visualization_inverted_histogram}
+# --- VISUALIZATION: Inverted histogram (PM surface up, non-PM surface down) ---
 ggplot() +
   # Upper histogram (PM Surface proteins)
   geom_histogram(data = PM_surface_proteins,
@@ -94,14 +107,10 @@ ggplot() +
        fill = "Protein Category") +
   # Add a horizontal line at y=0
   geom_hline(yintercept = 0, color = "black", size = 0.5)
-
-# Save the plot
-#ggsave("combined_histograms.png", width = 12, height = 8)
 ```
 
-
-```{r}
-# Optional: Create density plots instead of histograms
+```{r visualization_density}
+# --- VISUALIZATION: Density plots (alternative to histograms) ---
 ggplot() +
   # Upper density (PM Surface proteins)
   geom_density(data = PM_surface_proteins,
@@ -124,14 +133,10 @@ ggplot() +
        title = "Density Distribution of Mean Intensities by Protein Location and Treatment Group",
        fill = "Protein Category") +
   geom_hline(yintercept = 0, color = "black", size = 0.5)
-
-# Save the density plot
-#ggsave("combined_density_plots.png", width = 12, height = 8)
 ```
 
-Histograms of PM-surface subset
-```{r}
-# Create histograms for the subset
+```{r visualization_subset_histogram}
+# --- VISUALIZATION: Histograms for PM-surface subset only ---
 ggplot(PM_surface_proteins, aes(x = mean_intensity)) +
   geom_histogram(bins = 30) +
   facet_wrap(~GROUP) +
@@ -139,13 +144,9 @@ ggplot(PM_surface_proteins, aes(x = mean_intensity)) +
   labs(x = "Mean Intensity", 
        y = "Count",
        title = "Distribution of Mean Intensities for Proteins of Interest by Treatment Group")
-
 ```
 
-
-```{r}
-# Save the plot
+```{r export}
+# --- EXPORT: Save plot ---
 ggsave("intensity_histograms.png", width = 10, height = 6)
 ```
-
-

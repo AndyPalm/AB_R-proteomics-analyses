@@ -1,28 +1,43 @@
 ---
 title: "Volcano_plots_FP"
+author: "Andrew Becker"
 output: html_document
+date: "2025-11-29"
+R_version: "4.4.2"
+description: "Generates volcano plots from 3x3 experimental designs. Converts MSstats comparison results into a format resembling FragPipe replicate-level output and loops through multiple comparison dataframes to generate consistent volcano plots."
 ---
-Aggregate the data; takes several minutes
+
 ```{r setup, include=FALSE}
-library(pbapply)
-library(stringr)
+# --- SETUP: Load required libraries ---
+library(dplyr)
 library(ggplot2)
-library(reshape2)
-library(stringr)
 library(ggrepel)
+library(here)
+library(pbapply)
 library(RColorBrewer)
 library(readxl)
+library(reshape2)
+library(stringr)
 library(tidyverse)
-library(dplyr)
+
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
 ```
 
-#Transforming data from MSstats output ("comparison results") into different dataframes for the different comparisons used
-```{r}
+```{r data_loading}
+# --- DATA LOADING ---
+# Read MSstats comparison results and extract unique comparison labels
 setwd("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/AP2-339B_reruns_MSstats_top4_impute")
 
 data <- read.csv("339B_reruns-top4-features_comparison-results_imputed.csv")
 
 unique_labels <- unique(data$Label)
+```
+
+```{r data_processing}
+# --- DATA PROCESSING ---
+# Transform MSstats output into separate dataframes per comparison label
+# Handles infinite FC values by capping at ±10
 
 # Create a list to store all dataframes
 label_dataframes <- list()
@@ -60,8 +75,8 @@ for(label in unique_labels) {
 }
 ```
 
-Save each dataframe to a separate CSV file
-```{r}
+```{r export_split}
+# --- EXPORT: Save each comparison to a separate CSV file ---
 for(label in unique_labels) {
   write.csv(label_dataframes[[label]], 
             file = paste0(label, "_339B_reruns_impute-no-norm_transformed-data_29Nov25.csv"), 
@@ -69,8 +84,12 @@ for(label in unique_labels) {
 }
 ```
 
-#alternative labeling strategy: provide excel file with one column containing Uniprot accession numbers with the header 'ProteinID' and the label will be populated as the gene from the original dataframe (i.e. it uses the Gene label that already exists in the data). Useful if you don't have custom labels for any of your proteins
-```{r}
+```{r data_loading_labels}
+# --- DATA LOADING: Protein labels ---
+# Alternative labeling strategy: provide excel file with one column containing
+# Uniprot accession numbers with the header 'ProteinID'. The label will be
+# populated as the gene from the original dataframe.
+# Useful if you don't have custom labels for any of your proteins.
 protein_labels <- read_excel("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/339_selected-labels_29nov25.xlsx")
 results <- results %>%
   mutate(matching_protein = ProteinID %in% protein_labels$ProteinID) %>%
@@ -78,10 +97,10 @@ results <- results %>%
   select(-matching_protein)
 ```
 
-
-Setting protein subset groups (which proteins you want colored differently on volcano, i.e. all mito proteins, cholesterol-binding proteins, etc.)
-```{r} 
-#labeling nucleoporins
+```{r data_processing_subsets}
+# --- DATA PROCESSING: Protein subset groups ---
+# Define which proteins you want colored differently on volcano
+# (e.g., all mito proteins, cholesterol-binding proteins, etc.)
 NUP_list <- read_excel("~/R_data/PM_surface-proteinID.xlsx")
 results[!results$ProteinID%in%NUP_list$`ProteinID`,]$Label<- NA
 results[results$ProteinID%in%NUP_list$`ProteinID`,]$diffexpressed.raw<-paste("NUP",results[results$ProteinID%in%NUP_list$`ProteinID`,]$diffexpressed.raw,sep="_")
@@ -91,9 +110,9 @@ results$Label[which(results$diffexpressed.raw == "NO")] <- NA
 results$Label <- factor(results$Label)
 ```
 
-
-Make the volcano plot #ED1C24", "#3549a1", "#165e3a"
-```{r}
+```{r visualization}
+# --- VISUALIZATION: Single volcano plot ---
+# Generates a volcano plot with custom color scheme and label repulsion
 results$selected_labels <- ifelse(
   abs(results$FC) > 1.5 & results$adj.pvalue < 0.05,
   results$Label,
@@ -101,10 +120,10 @@ results$selected_labels <- ifelse(
 )
 volcano = ggplot(data = results, aes(x = FC, y = -1*log10(adj.pvalue)))
 p <- volcano + geom_point(aes(col = diffexpressed.adj), size = 1.0, alpha = 0.8) +
-    scale_color_manual(values = c("#eb6e34", "light grey", "#165e3a", "#165e3a", "#eb6e34", "#eb6e34")) + ###can adjust the colors with hex codes or words. levels=c("NO","UP","CBP_NO","CBP_UP","CBP_DOWN","DOWN")
+    scale_color_manual(values = c("#eb6e34", "light grey", "#165e3a", "#165e3a", "#eb6e34", "#eb6e34")) +
     geom_vline(xintercept = c(-1.5, 1.5), col = "black", linetype = "dashed") +
     geom_hline(yintercept = -log10(0.05), col = "black", linetype = "dashed") +
-    geom_label_repel(aes(label = selected_labels), segment.color = 'black', force = 10) + #this labels the list you designated above
+    geom_label_repel(aes(label = selected_labels), segment.color = 'black', force = 10) +
     theme_classic(base_size = 20) +
     labs(title = plot_title, y = "", x = "") +
     theme(legend.position = "none") +
@@ -115,8 +134,8 @@ p <- volcano + geom_point(aes(col = diffexpressed.adj), size = 1.0, alpha = 0.8)
 p
 ```
 
-
-```{r}
+```{r visualization_overlay}
+# --- VISUALIZATION: Add black circle overlay for selected proteins ---
 p <- p + geom_point(
   data = subset(results, as.character(selected_labels) %in% levels(factor(selected_labels))),
   aes(x = FC, y = -1 * log10(p_value)),
@@ -129,14 +148,15 @@ p <- p + geom_point(
 p
 ```
 
-
-```{r}
+```{r export}
+# --- EXPORT: Save plot and results ---
 ggsave("ALOD4-UF-vs-DF_.png", width = 6, height = 4, dpi=300)
 write.csv(results, file="AP2-296_search5_no-norm_ALOD4-DOWN_OlyA-UP_results.csv",row.names = F)
 ```
 
-Loop
-```{r}
+```{r analysis_loop}
+# --- ANALYSIS: Batch loop through all comparison CSV files ---
+# Reads each comparison file, processes data, and generates a volcano plot
 setwd("C:/Users/andbp/Box/Backus_Lab/Andrew_Becker/ABecker_Lab_Notebook/R_WD/AP2-339/AP2-339B_reruns_MSstats_top4_impute/transformed_data_for_plotting")
 csv_files <- list.files(pattern = "\\.csv$", full.names = FALSE)
 gene_lookup <- read_excel("~/R_data/uniprot_hs_29may25.xlsx")
@@ -148,7 +168,7 @@ for(filename in csv_files) {
   # Extract the title (everything before "_339")
   plot_title <- sub("_339.*", "", basename(filename))
   
-  # Process the data (your existing code)
+  # Process the data
   results <- results %>%
     rename(diffexpressed.raw = diffexpressed)
   
@@ -171,7 +191,7 @@ for(filename in csv_files) {
     results$Label,
     NA
   )
-  # modify results frame so selected labels show up
+  # Modify results frame so selected labels show up
   results <- results %>%
   mutate(matching_protein = ProteinID %in% protein_labels$ProteinID) %>%
   mutate(selected_labels = ifelse(matching_protein, Label, selected_labels)) %>%
@@ -200,4 +220,3 @@ for(filename in csv_files) {
   cat("Processed:", filename, "-> Saved as:", output_filename, "\n")
 }
 ```
-

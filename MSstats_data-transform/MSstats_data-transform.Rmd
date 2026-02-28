@@ -1,28 +1,42 @@
 ---
 title: "MSstats-multiple-comparisons_conversion"
+author: "Andrew Becker"
 output: html_document
 date: "2025-04-08"
+R_version: "4.4.2"
+description: "Converts MSstats comparison results into separate dataframes for each comparison condition. Transforms data into a format suitable for downstream visualization, handling infinite values and missing data appropriately."
 ---
 
 ```{r setup, include=FALSE}
-library(pbapply)
-library(stringr)
+# --- SETUP: Load required libraries ---
+library(dplyr)
 library(ggplot2)
-library(reshape2)
-library(stringr)
 library(ggrepel)
+library(here)
+library(pbapply)
 library(RColorBrewer)
 library(readxl)
+library(reshape2)
+library(stringr)
 library(tidyverse)
-library(dplyr)
+
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
 ```
 
-```{r}
+```{r data_loading}
+# --- DATA LOADING ---
+# Read MSstats comparison results
 setwd("C:/Users/andbp/Documents/R_data/MSstats_data-transform/")
-
 data <- read.csv("comparison_results_search5_median-norm.csv")
 
 unique_labels <- unique(data$Label)
+```
+
+```{r data_processing}
+# --- DATA PROCESSING ---
+# Create separate dataframe for each comparison label
+# Handles infinite FC values by capping at ±10
 
 # Create a list to store all dataframes
 label_dataframes <- list()
@@ -32,7 +46,7 @@ for(label in unique_labels) {
   # Filter data for current label
   subset_data <- data %>%
     filter(Label == label) %>%
-    # Select and rename columns as needed
+    # Select and rename columns to standardized format
     select(
       ProteinID = Protein,
       Label,
@@ -60,18 +74,11 @@ for(label in unique_labels) {
 }
 ```
 
-
-```{r}
-write.csv(transformed_data, "transformed_data.csv", row.names = FALSE)
-```
-
-
-Save each dataframe to a separate CSV file
-```{r}
+```{r export}
+# --- EXPORT: Save each comparison to a separate CSV file ---
 for(label in unique_labels) {
   write.csv(label_dataframes[[label]], 
             file = paste0(label, "_search5_median-norm_transformed-data_4May25.csv"), 
             row.names = FALSE)
 }
 ```
-

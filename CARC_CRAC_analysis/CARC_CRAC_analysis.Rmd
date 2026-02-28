@@ -1,24 +1,33 @@
 ---
 title: "CARC-CRAC_analysis"
+author: "Andrew Becker"
 output: html_document
 date: "2025-07-29"
+R_version: "4.4.2"
+description: "Identifies and characterizes CARC and CRAC cholesterol-recognition motifs in the human proteome. Analyzes motif positions, structural overlaps with transmembrane helices and beta-strands, and generates comprehensive statistics."
 ---
 
-```{r}
-library(tidyverse)
-library(stringr)
-library(readxl)
+```{r setup, include=FALSE}
+# --- SETUP: Load required libraries ---
 library(dplyr)
-library(tidyr)
+library(here)
 library(progress)
+library(readxl)
+library(stringr)
+library(tidyr)
+library(tidyverse)
+
+# --- LOAD CONFIGURATION ---
+source(here::here("src", "config.R"))
 
 setwd("~/R_data/CARC_CRAC_analysis/")
 proteome_data <- read_excel("Gene_TM_sequence_helix_b-strand_UniProtkb-hs_2025_07_29.xlsx")
 ```
 
+```{r data_processing_functions}
+# --- DATA PROCESSING: Define motif analysis functions ---
 
-```{r}
-# Function to parse structural features (helices or strands)
+# Function to parse structural features (helices or strands) from UniProt annotation strings
 parse_structural_features <- function(feature_string) {
   if (is.na(feature_string) || feature_string == "") {
     return(tibble(start = numeric(), end = numeric()))
@@ -67,6 +76,8 @@ check_structural_overlap <- function(motif_positions, motif_lengths, structural_
 }
 
 # Enhanced motif finding function that returns lengths
+# CRAC pattern: [LV](X0-5)Y(X0-5)[RK]
+# CARC pattern: [RK](X0-5)[YF](X0-5)[LV]
 find_motifs_enhanced <- function(sequence, pattern_type = "CRAC") {
   amino_acids <- "[ACDEFGHIKLMNPQRSTVWY]"
   
@@ -183,7 +194,7 @@ analyze_proteome_with_structure <- function(proteome_df) {
   return(results)
 }
 
-# Function to get detailed structural overlap information
+# Function to get detailed structural overlap information for a specific protein
 get_structural_overlap_details <- function(proteome_results, entry_id) {
   protein <- proteome_results %>% 
     filter(Entry == entry_id) %>%
@@ -236,33 +247,35 @@ get_structural_overlap_details <- function(proteome_results, entry_id) {
   
   return(details)
 }
-
-
 ```
 
-Run that shit
-```{r}
+```{r analysis}
+# --- ANALYSIS: Run proteome-wide CARC/CRAC motif analysis ---
 results <- analyze_proteome_with_structure(proteome_data)
 ```
-```{r}
+
+```{r export}
+# --- EXPORT: Save analysis results ---
 write.csv(results, file="AB_human-proteome_CARC-CRAC_analysis_29july25.csv",row.names = F)
 ```
 
-
-Load in results
-```{r}
+```{r data_loading_results}
+# --- DATA LOADING: Load previously computed results ---
 results <- read.csv("AB_human-proteome_CARC-CRAC_analysis_29july25.csv")
 ```
 
-Summary of structural overlaps
-structure_summary <- results %>%
-   summarise(
-     total_CARC_in_helix = sum(CARC_in_helix),
-     total_CARC_in_strand = sum(CARC_in_strand),
-     total_CRAC_in_helix = sum(CRAC_in_helix),
-     total_CRAC_in_strand = sum(CRAC_in_strand),
-     proteins_with_motifs_in_structure = sum(any_motif_in_structure)
-   )
+```{r analysis_summary}
+# --- ANALYSIS: Summary of structural overlaps ---
+# Uncomment to run:
+# structure_summary <- results %>%
+#    summarise(
+#      total_CARC_in_helix = sum(CARC_in_helix),
+#      total_CARC_in_strand = sum(CARC_in_strand),
+#      total_CRAC_in_helix = sum(CRAC_in_helix),
+#      total_CRAC_in_strand = sum(CRAC_in_strand),
+#      proteins_with_motifs_in_structure = sum(any_motif_in_structure)
+#    )
 
- Get detailed information for a specific protein
- details <- get_structural_overlap_details(results, "A0AV02")
+# Get detailed information for a specific protein:
+# details <- get_structural_overlap_details(results, "A0AV02")
+```
