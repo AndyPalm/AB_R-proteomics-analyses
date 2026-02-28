@@ -2,7 +2,11 @@ Welcome fellow chemical biologist/mass spectrometrist/Backus lab member.
 
 This guide explains how to set up and run the R markdown files (.Rmd) for accomplishing different tasks. This requires having the R scripts (.R) accessible in the /src folder by loading the configuration file (`src/config.R`) so that all the analysis scripts in this repository work on your computer.
 
-If you are a Backus lab member and want to retrieve the exmaple data, head to \Box\Backus_Lab\Andrew_Becker\AB_R-proteomics-analyses which has an exact mirror of this repo but with the example data populated in the corresponding folders for each analysis.
+If you are a Backus lab member and want to retrieve the exmaple data, head to:
+```
+Box\Backus_Lab\Andrew_Becker\AB_R-proteomics-analyses
+```
+which has an exact mirror of this repo but with the example data populated in the corresponding folders for each analysis.
 
 ---
 
