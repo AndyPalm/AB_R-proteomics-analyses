@@ -22,6 +22,7 @@ library(tidyverse)
 
 # --- LOAD CONFIGURATION ---
 source(here::here("src", "config.R"))
+exp_dir <- ap2_327_dir
 pq_dir   <- file.path(exp_dir, "02_R_Intermediates")
 output_dir  <- file.path(box_root, "POCA2", "03_graphs_plots")
 
@@ -126,10 +127,17 @@ stats.rna.clean %>%
 
 ```{r data_processing_protein}
 # --- DATA PROCESSING: Protein ---
-# Condition tagging, counts per group, and quantitative stats
+# 1. Filter out 'static' and tag conditions explicitly
 prot_data <- exp.protein_input %>%
-  mutate(Condition = ifelse(grepl(cond1, GROUP), cond1, cond2))
+  filter(GROUP != "static") %>% # Removes 'static' rows immediately
+  mutate(Condition = case_when(
+    GROUP == cond1 ~ cond1,
+    GROUP == cond2 ~ cond2,
+    TRUE ~ "Other"
+  )) %>%
+  filter(Condition != "Other") # Ensure only DF and UF remain
 
+# 2. Calculate counts per group for binning
 prot_counts <- prot_data %>%
   group_by(Protein) %>%
   summarise(
@@ -138,8 +146,10 @@ prot_counts <- prot_data %>%
     .groups = 'drop'
   )
 
-# Quantitative Stats (T-Test)
-valid_prots <- prot_counts %>% filter(n_cond1 >= 2 & n_cond2 >= 2) %>% pull(Protein)
+# 3. Quantitative Stats (Requires 2+ replicates in BOTH conditions)
+valid_prots <- prot_counts %>% 
+  filter(n_cond1 >= 2 & n_cond2 >= 2) %>% 
+  pull(Protein)
 
 stats.protein.clean <- prot_data %>%
   filter(Protein %in% valid_prots) %>%
@@ -154,9 +164,9 @@ stats.protein.clean <- prot_data %>%
   left_join(df.labels %>% select(Entry, `Gene Names (primary)`), by = c("Protein" = "Entry")) %>%
   filter(!is.na(`Gene Names (primary)`))
 
-# Exclusive Lists (for Singletons)
-list_only_c1 <- prot_counts %>% filter(n_cond1 >= 2 & n_cond2 < 2) %>% pull(Protein)
-list_only_c2 <- prot_counts %>% filter(n_cond2 >= 2 & n_cond1 < 2) %>% pull(Protein)
+# 4. Exclusive Lists (Singletons)
+list_only_c1 <- prot_counts %>% filter(n_cond1 >= 2 & n_cond2 == 0) %>% pull(Protein)
+list_only_c2 <- prot_counts %>% filter(n_cond2 >= 2 & n_cond1 == 0) %>% pull(Protein)
 
 protein_only_cond1 <- prot_data %>% filter(Protein %in% list_only_c1)
 protein_only_cond2 <- prot_data %>% filter(Protein %in% list_only_c2)
@@ -229,7 +239,7 @@ eq_label <- paste0(
   abs(round(reg_int, 2))
 )
 
-ggplot(plot_df, aes(x = RNA_Log2FC, y = Protein_Log2FC)) +
+p_resid <- ggplot(plot_df, aes(x = RNA_Log2FC, y = Protein_Log2FC)) +
   # Base Points
   geom_point(aes(color = Color_Resid), alpha = 0.7) +
   # Regression Lines
@@ -242,15 +252,143 @@ ggplot(plot_df, aes(x = RNA_Log2FC, y = Protein_Log2FC)) +
   # Overlay: Text Labels for 'plot_labels'
   geom_text_repel(data = subset(plot_df, `Gene Names (primary)` %in% plot_labels),
                   aes(label = `Gene Names (primary)`), 
-                  size = 4, fontface = "bold", box.padding = 0.5, max.overlaps = Inf) +
+                  size = 5, fontface = "plain", box.padding = 0.5, max.overlaps = Inf) +
   # Add equation of fitted linear model
   annotate("text", x = 1, y = 3, label = eq_label, 
            hjust = 0, size = 5, fontface = "italic") +
   scale_color_manual(values = my_colors) +
-  coord_cartesian(xlim = c(-3, 4), ylim = c(-3, 3)) + 
+  scale_x_continuous(breaks = -3:3) + 
+  scale_y_continuous(breaks = -3:3) +
+  coord_cartesian(xlim = c(-3.5, 3.5), ylim = c(-3.5, 3.5)) + 
   theme_classic() +
   labs(title = "Regression Residuals", subtitle = "")
+p_resid
+# ggsave(filename = file.path(output_dir, "plot-studentized-residuals_2Mar26.pdf"), plot = p_resid, width = 7, height = 7)
 ```
+```{r}
+# --- 1. AXIS CUSTOMIZATION SETTINGS ---
+# Define your desired range and intervals here
+z_min  <- -8
+z_max  <- 8
+z_step <- 2
+# #
+# Generate the vector of breaks based on your settings
+z_breaks <- seq(z_min, z_max, by = z_step)
+z_lims   <- c(z_min - 0.5, z_max + 0.5)
+# #
+# --- 2. UPDATED MAIN Z-SCORE PLOT ---
+# Calculate discordance based on Z-score difference
+plot_df_z <- proteogenomics_stats %>%
+  mutate(
+    Z_Diff = Z_Protein - Z_RNA,
+    Color_Z = case_when(
+      Z_Diff > 3  ~ paste("High in", cond1),
+      Z_Diff < -3 ~ paste("High in", cond2),
+      TRUE        ~ "Concordant"
+    )
+  )
+# #
+p_zscore <- ggplot(plot_df_z, aes(x = Z_RNA, y = Z_Protein)) +
+  geom_abline(slope = 1, intercept = 0, color = "black", size = 1) +
+  geom_abline(slope = 1, intercept = 3, linetype = "dashed", color = "grey40") +
+  geom_abline(slope = 1, intercept = -3, linetype = "dashed", color = "grey40") +
+  geom_point(aes(color = Color_Z), alpha = 0.7) +
+  geom_point(data = subset(plot_df_z, `Gene Names (primary)` %in% plot_labels),
+             shape = 1, size = 1.9, color = "black", stroke = 0.8) +
+  geom_text_repel(data = subset(plot_df_z, `Gene Names (primary)` %in% plot_labels),
+                  aes(label = `Gene Names (primary)`), 
+                  size = 5, fontface = "plain", box.padding = 0.5, max.overlaps = Inf) +
+  scale_color_manual(values = my_colors_z) +
+  # Custom Axis Breaks and Labels
+  scale_x_continuous(breaks = z_breaks) + 
+  scale_y_continuous(breaks = z_breaks) +
+  coord_cartesian(xlim = z_lims, ylim = z_lims) + 
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 14, color = "black"),
+    axis.title = element_text(size = 16, face = "bold")
+  ) +
+  labs(
+    title = "Z-Score Discordance Analysis",
+    x = expression(bold(RNA~Z-Score)),
+    y = expression(bold(Protein~Z-Score)),
+    color = "Discordance Status"
+  )
+# #
+# --- 3. PREPARE SINGLETON Z-SCORE DATA ---
+# We calculate Z-scores for intensities within the singleton populations
+# #
+# Protein Singletons
+df_prot_c1 <- protein_only_cond1 %>%
+  left_join(df.labels %>% select(Entry, `Gene Names (primary)`), by = c("Protein" = "Entry")) %>%
+  mutate(Label = coalesce(`Gene Names (primary)`, Protein)) %>%
+  group_by(Protein, Label) %>%
+  summarize(mean_intensity = mean(LogIntensities, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Z_Intensity = as.numeric(scale(mean_intensity)))
+# #
+df_prot_c2 <- protein_only_cond2 %>%
+  left_join(df.labels %>% select(Entry, `Gene Names (primary)`), by = c("Protein" = "Entry")) %>%
+  mutate(Label = coalesce(`Gene Names (primary)`, Protein)) %>%
+  group_by(Protein, Label) %>%
+  summarize(mean_intensity = mean(LogIntensities, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Z_Intensity = as.numeric(scale(mean_intensity)))
+# #
+# RNA Singletons
+df_rna_c1 <- stats.rna.clean %>%
+  filter(Category == paste("Only in", cond1)) %>%
+  mutate(mean_val = log2(Mean_cond1 + 1), Label = Gene) %>%
+  mutate(Z_Intensity = as.numeric(scale(mean_val)))
+# #
+df_rna_c2 <- stats.rna.clean %>%
+  filter(Category == paste("Only in", cond2)) %>%
+  mutate(mean_val = log2(Mean_cond2 + 1), Label = Gene) %>%
+  mutate(Z_Intensity = as.numeric(scale(mean_val)))
+# #
+# --- 4. GENERATE GUTTER PLOTS ---
+# Using the same logic but targeting the Z_Intensity column
+# #
+p_prot_1_z <- generate_horizontal_gutter(
+  df_prot_c1 %>% mutate(mean_intensity = Z_Intensity), 
+  c1_color, paste("Protein:", cond1),
+  x_limits = z_lims, axis_label = "Intensity Z-Score",
+  axis_side = "bottom", label_side = "top"
+) + scale_x_continuous(breaks = z_breaks, limits = z_lims)
+# #
+p_prot_2_z <- generate_horizontal_gutter(
+  df_prot_c2 %>% mutate(mean_intensity = Z_Intensity), 
+  c2_color, paste("Protein:", cond2),
+  x_limits = z_lims, axis_label = "Intensity Z-Score",
+  axis_side = "top", label_side = "bottom"
+) + scale_x_continuous(breaks = z_breaks, limits = z_lims)
+# #
+p_rna_1_z  <- generate_vertical_gutter(
+  df_rna_c1 %>% mutate(mean_intensity = Z_Intensity), 
+  c1_color, paste("RNA:", cond1),
+  y_limits = z_lims, axis_label = "Intensity Z-Score",
+  axis_side = "left", label_side = "right"
+) + scale_y_continuous(breaks = z_breaks, limits = z_lims)
+# #
+p_rna_2_z  <- generate_vertical_gutter(
+  df_rna_c2 %>% mutate(mean_intensity = Z_Intensity), 
+  c2_color, paste("RNA:", cond2),
+  y_limits = z_lims, axis_label = "Intensity Z-Score",
+  axis_side = "right", label_side = "left"
+) + scale_y_continuous(breaks = z_breaks, limits = z_lims)
+# #
+# Print all plots
+print(p_zscore)
+print(p_prot_1_z)
+print(p_prot_2_z)
+print(p_rna_1_z)
+print(p_rna_2_z)
+
+#ggsave(filename = file.path(output_dir, "plot-zscore_2Mar26.pdf"), plot = p_zscore, width = 7, height = 7)
+#ggsave(filename = file.path(output_dir, "z-score-protein-only-DF_2mar26.pdf"), plot = p_prot_1_z, width = 7, height = 3)
+#ggsave(filename = file.path(output_dir, "z-scoreprotein-only-UF_2mar26.pdf"), plot = p_prot_2_z, width = 7, height = 3)
+#ggsave(filename = file.path(output_dir, "z-score-RNA-only-DF_2mar26.pdf"), plot = p_rna_1_z, width = 3, height = 7)
+#ggsave(filename = file.path(output_dir, "z-score-RNA-only-UF_2mar26.pdf"), plot = p_rna_2_z, width = 3, height = 7)
+```
+
 
 ```{r visualization_gutter}
 # --- VISUALIZATION: Gutter plots for condition-exclusive proteins ---
@@ -413,6 +551,11 @@ print(p_prot_1)
 print(p_prot_2)
 print(p_rna_1)
 print(p_rna_2)
+
+#ggsave(filename = file.path(output_dir, "protein-only-DF_2mar26.pdf"), plot = p_prot_1, width = 7, height = 3)
+#ggsave(filename = file.path(output_dir, "protein-only-UF_2mar26.pdf"), plot = p_prot_2, width = 7, height = 3)
+#ggsave(filename = file.path(output_dir, "RNA-only-DF_2mar26.pdf"), plot = p_rna_1, width = 3, height = 7)
+#ggsave(filename = file.path(output_dir, "RNA-only-UF_2mar26.pdf"), plot = p_rna_2, width = 3, height = 7)
 ```
 
 ```{r analysis_halflife}

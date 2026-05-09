@@ -73,7 +73,7 @@ generate_volcano <- function(current_comparison_name, full_data, subcell_list_df
     theme(legend.position = "none") +
     theme(axis.text.x = element_text(size = 16, family = "sans"), # 'sans' is safer than 'Arial' across OS
           axis.text.y = element_text(size = 16, family = "sans")) +
-    scale_x_continuous(limits = c(-3, 3), breaks = seq(-3, 3, 1))
+    coord_cartesian(xlim = c(-4, 4))
   
   # 5. The "Black Circle" Overlay (The requested feature)
   # We subset the data to only rows where label_text is NOT NA
